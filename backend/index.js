@@ -1,667 +1,3 @@
-// const express = require('express');
-// const cors = require('cors');
-// const axios = require('axios');
-// const mongoose = require('mongoose');
-// const bcrypt = require('bcrypt');
-// const jwt = require('jsonwebtoken');
-// require('dotenv').config();
-
-// const app = express();
-// const PORT = 5000;
-
-// app.use(cors());
-// app.use(express.json());
-
-// // MongoDB connection
-// mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/numberplates', {})
-// .then(() => console.log('Connected to MongoDB'))
-// .catch(err => console.error('MongoDB connection error:', err));
-
-// // ===============================
-// // SCHEMAS
-// // ===============================
-
-// // Admin User Schema
-// const adminSchema = new mongoose.Schema({
-//     username: { type: String, required: true, unique: true },
-//     email: { type: String, required: true, unique: true },
-//     password: { type: String, required: true },
-//     createdAt: { type: Date, default: Date.now }
-// });
-
-// // Configuration Schema (unified approach for less storage)
-// const configurationSchema = new mongoose.Schema({
-//     type: { 
-//         type: String, 
-//         required: true,
-//         enum: ['plateStyle', 'thickness', 'color', 'shadow', 'border', 'size', 'finish', 'country', 'flag']
-//     },
-//     key: { type: String, required: true },
-//     label: { type: String, required: true },
-//     price: { type: Number, required: true, min: 0 },
-//     description: { type: String },
-    
-//     // Plate Style specific fields
-//     font: { type: String },
-//     fontUrl: { type: String },
-//     fontSize: { type: Number },
-    
-//     // Color specific fields
-//     color: { type: String },
-//     name: { type: String },
-    
-//     // Thickness specific fields
-//     value: { type: Number },
-    
-//     // Border specific fields
-//     borderColor: { type: String },
-    
-//     // Size specific fields
-//     dimensions: { type: String },
-    
-//     // Flag specific fields
-//     text: { type: String },
-//     flagImage: { type: String },
-//     parentCountry: { type: String }, // for flag options
-    
-//     // Common fields
-//     isActive: { type: Boolean, default: true },
-//     createdAt: { type: Date, default: Date.now },
-//     updatedAt: { type: Date, default: Date.now }
-// });
-
-// // Compound index for efficient queries
-// configurationSchema.index({ type: 1, key: 1 }, { unique: true });
-
-// // Order Schema (existing)
-// const orderSchema = new mongoose.Schema({
-//     orderId: { type: String, required: true },
-//     customerName: { type: String, required: true },
-//     product: { type: String, required: true },
-//     amount: { type: Number, required: true },
-//     paymentStatus: { type: String, required: true },
-//     dateOfOrder: { type: Date, required: true },
-//     shippingAddress: {
-//         street: { type: String, required: true },
-//         city: { type: String, required: true },
-//         state: { type: String, required: true },
-//         pincode: { type: String, required: true },
-//         country: { type: String, required: true },
-//         phone: { type: String, required: true }
-//     }
-// });
-
-// // Models
-// const Admin = mongoose.model('Admin', adminSchema);
-// const Configuration = mongoose.model('Configuration', configurationSchema);
-// const Order = mongoose.model('Order', orderSchema);
-
-// // ===============================
-// // MIDDLEWARE
-// // ===============================
-
-// // JWT Authentication Middleware
-// const authenticateToken = (req, res, next) => {
-//     const authHeader = req.headers['authorization'];
-//     const token = authHeader && authHeader.split(' ')[1];
-    
-//     if (!token) {
-//         return res.status(401).json({ error: 'Access token required' });
-//     }
-    
-//     jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key', (err, user) => {
-//         if (err) {
-//             return res.status(403).json({ error: 'Invalid or expired token' });
-//         }
-//         req.user = user;
-//         next();
-//     });
-// };
-
-// // ===============================
-// // AUTH ROUTES
-// // ===============================
-
-// // Admin Registration
-// app.post('/admin/register', async (req, res) => {
-//     try {
-//         const { username, email, password } = req.body;
-        
-//         if (!username || !email || !password) {
-//             return res.status(400).json({ error: 'Username, email, and password are required' });
-//         }
-        
-//         // Check if admin already exists
-//         const existingAdmin = await Admin.findOne({ 
-//             $or: [{ username }, { email }] 
-//         });
-        
-//         if (existingAdmin) {
-//             return res.status(400).json({ error: 'Admin with this username or email already exists' });
-//         }
-        
-//         // Hash password
-//         const saltRounds = 10;
-//         const hashedPassword = await bcrypt.hash(password, saltRounds);
-        
-//         // Create admin
-//         const admin = new Admin({
-//             username,
-//             email,
-//             password: hashedPassword
-//         });
-        
-//         await admin.save();
-        
-//         res.status(201).json({ 
-//             success: true, 
-//             message: 'Admin registered successfully',
-//             admin: { id: admin._id, username: admin.username, email: admin.email }
-//         });
-        
-//     } catch (error) {
-//         console.error('Registration error:', error);
-//         res.status(500).json({ error: 'Registration failed' });
-//     }
-// });
-
-// // Admin Login
-// app.post('/admin/login', async (req, res) => {
-//     try {
-//         const { username, password } = req.body;
-        
-//         if (!username || !password) {
-//             return res.status(400).json({ error: 'Username and password are required' });
-//         }
-        
-//         // Find admin
-//         const admin = await Admin.findOne({ username });
-//         console.log('Admin found:', admin);
-//         if (!admin) {
-//             console.log('Admin not found for username:', username);
-//             return res.status(401).json({ error: 'Invalid credentials' });
-//         }
-        
-//         // Check password
-//         const isValidPassword = await bcrypt.compare(password, admin.password);
-//         if (!isValidPassword) {
-//             return res.status(401).json({ error: 'Invalid credentials' });
-//         }
-        
-//         // Generate JWT token (7 days)
-//         const token = jwt.sign(
-//             { id: admin._id, username: admin.username },
-//             process.env.JWT_SECRET || 'your-secret-key',
-//             { expiresIn: '7d' }
-//         );
-        
-//         res.json({
-//             success: true,
-//             token,
-//             admin: { id: admin._id, username: admin.username, email: admin.email }
-//         });
-        
-//     } catch (error) {
-//         console.error('Login error:', error);
-//         res.status(500).json({ error: 'Login failed' });
-//     }
-// });
-
-// // ===============================
-// // CONFIGURATION ROUTES
-// // ===============================
-
-// // Get all configurations by type
-// app.get('/config/:type', async (req, res) => {
-//     try {
-//         const { type } = req.params;
-//         const configurations = await Configuration.find({ type, isActive: true })
-//             .sort({ createdAt: 1 });
-        
-//         res.json({
-//             success: true,
-//             data: configurations
-//         });
-//     } catch (error) {
-//         console.error('Error fetching configurations:', error);
-//         res.status(500).json({ error: 'Failed to fetch configurations' });
-//     }
-// });
-
-// // Get all configurations (for admin panel)
-// app.get('/admin/configurations', authenticateToken, async (req, res) => {
-//     try {
-//         const configurations = await Configuration.find({})
-//             .sort({ type: 1, createdAt: 1 });
-        
-//         // Group by type
-//         const groupedConfigs = configurations.reduce((acc, config) => {
-//             if (!acc[config.type]) {
-//                 acc[config.type] = [];
-//             }
-//             acc[config.type].push(config);
-//             return acc;
-//         }, {});
-        
-//         res.json({
-//             success: true,
-//             data: groupedConfigs
-//         });
-//     } catch (error) {
-//         console.error('Error fetching admin configurations:', error);
-//         res.status(500).json({ error: 'Failed to fetch configurations' });
-//     }
-// });
-
-// // Update single configuration
-// app.put('/admin/configurations/:id', authenticateToken, async (req, res) => {
-//     try {
-//         const { id } = req.params;
-//         const updateData = { ...req.body, updatedAt: new Date() };
-        
-//         // Validate price
-//         if (updateData.price !== undefined && updateData.price < 0) {
-//             return res.status(400).json({ error: 'Price cannot be negative' });
-//         }
-        
-//         const oldConfig = await Configuration.findById(id);
-//         if (!oldConfig) {
-//             return res.status(404).json({ error: 'Configuration not found' });
-//         }
-        
-//         const updatedConfig = await Configuration.findByIdAndUpdate(
-//             id, 
-//             updateData, 
-//             { new: true, runValidators: true }
-//         );
-        
-//         res.json({
-//             success: true,
-//             data: updatedConfig,
-//             previous: { price: oldConfig.price },
-//             updated: { price: updatedConfig.price }
-//         });
-//     } catch (error) {
-//         console.error('Error updating configuration:', error);
-//         res.status(500).json({ error: 'Failed to update configuration' });
-//     }
-// });
-
-// // Bulk update configurations
-// app.put('/admin/configurations/bulk', authenticateToken, async (req, res) => {
-//     try {
-//         const { ids, updateType, value, percentage } = req.body;
-        
-//         if (!ids || !Array.isArray(ids) || ids.length === 0) {
-//             return res.status(400).json({ error: 'IDs array is required' });
-//         }
-        
-//         // Get current configurations
-//         const currentConfigs = await Configuration.find({ _id: { $in: ids } });
-//         const updates = [];
-        
-//         for (const config of currentConfigs) {
-//             let newPrice = config.price;
-            
-//             switch (updateType) {
-//                 case 'fixed_increase':
-//                     newPrice = Math.max(0, config.price + parseFloat(value));
-//                     break;
-//                 case 'fixed_decrease':
-//                     newPrice = Math.max(0, config.price - parseFloat(value));
-//                     break;
-//                 case 'percentage_increase':
-//                     newPrice = Math.max(0, config.price * (1 + parseFloat(percentage) / 100));
-//                     break;
-//                 case 'percentage_decrease':
-//                     newPrice = Math.max(0, config.price * (1 - parseFloat(percentage) / 100));
-//                     break;
-//                 case 'set_price':
-//                     newPrice = Math.max(0, parseFloat(value));
-//                     break;
-//                 default:
-//                     return res.status(400).json({ error: 'Invalid update type' });
-//             }
-            
-//             // Round to 2 decimal places
-//             newPrice = Math.round(newPrice * 100) / 100;
-            
-//             updates.push({
-//                 updateOne: {
-//                     filter: { _id: config._id },
-//                     update: { 
-//                         price: newPrice, 
-//                         updatedAt: new Date() 
-//                     }
-//                 }
-//             });
-//         }
-        
-//         // Perform bulk update
-//         await Configuration.bulkWrite(updates);
-        
-//         // Get updated configurations
-//         const updatedConfigs = await Configuration.find({ _id: { $in: ids } });
-        
-//         res.json({
-//             success: true,
-//             message: `Successfully updated ${updatedConfigs.length} configurations`,
-//             data: updatedConfigs
-//         });
-//     } catch (error) {
-//         console.error('Error bulk updating configurations:', error);
-//         res.status(500).json({ error: 'Failed to perform bulk update' });
-//     }
-// });
-
-// // Add new configuration
-// app.post('/admin/configurations', authenticateToken, async (req, res) => {
-//     try {
-//         const configData = { ...req.body };
-        
-//         // Validate price
-//         if (configData.price < 0) {
-//             return res.status(400).json({ error: 'Price cannot be negative' });
-//         }
-        
-//         const configuration = new Configuration(configData);
-//         await configuration.save();
-        
-//         res.status(201).json({
-//             success: true,
-//             data: configuration
-//         });
-//     } catch (error) {
-//         console.error('Error creating configuration:', error);
-//         if (error.code === 11000) {
-//             res.status(400).json({ error: 'Configuration with this type and key already exists' });
-//         } else {
-//             res.status(500).json({ error: 'Failed to create configuration' });
-//         }
-//     }
-// });
-
-// // Delete configuration
-// app.delete('/admin/configurations/:id', authenticateToken, async (req, res) => {
-//     try {
-//         const { id } = req.params;
-        
-//         // Soft delete by setting isActive to false
-//         const deletedConfig = await Configuration.findByIdAndUpdate(
-//             id,
-//             { isActive: false, updatedAt: new Date() },
-//             { new: true }
-//         );
-        
-//         if (!deletedConfig) {
-//             return res.status(404).json({ error: 'Configuration not found' });
-//         }
-        
-//         res.json({
-//             success: true,
-//             message: 'Configuration deleted successfully'
-//         });
-//     } catch (error) {
-//         console.error('Error deleting configuration:', error);
-//         res.status(500).json({ error: 'Failed to delete configuration' });
-//     }
-// });
-
-// // ===============================
-// // EXISTING ROUTES (Orders & PayPal)
-// // ===============================
-
-// app.get('/health', (req, res) => {
-//     res.json({ status: 'ok' });
-// });
-
-// // Get all orders
-// app.get('/order-details', async (req, res) => {
-//     try {
-//         console.log('Attempting to fetch orders...');
-//         const { includeAddress } = req.query;
-        
-//         const db = mongoose.connection.db;
-//         const rawOrders = await db.collection('orders').find({}).toArray();
-//         console.log('Raw orders from collection:', rawOrders);
-//         console.log('Raw orders count:', rawOrders.length);
-        
-//         const orders = await Order.find({}).sort({ dateOfOrder: -1 });
-//         console.log('Mongoose orders:', orders);
-//         console.log('Mongoose orders count:', orders.length);
-        
-//         const dataToUse = orders.length > 0 ? orders : rawOrders;
-        
-//         const formattedOrders = dataToUse.map(order => {
-//             const baseOrder = {
-//                 id: order._id,
-//                 orderId: order.orderId,
-//                 customer: order.customerName,
-//                 product: order.product,
-//                 amount: order.amount,
-//                 status: order.paymentStatus,
-//                 date: order.dateOfOrder
-//             };
-            
-//             if (includeAddress === 'true') {
-//                 baseOrder.shippingAddress = order.shippingAddress;
-//             }
-            
-//             return baseOrder;
-//         });
-        
-//         console.log('Formatted orders:', formattedOrders);
-        
-//         res.json({
-//             success: true,
-//             data: formattedOrders
-//         });
-//     } catch (error) {
-//         console.error('Error fetching orders:', error);
-//         res.status(500).json({
-//             success: false,
-//             error: 'Failed to fetch orders',
-//             message: error.message
-//         });
-//     }
-// });
-
-// // Get single order details
-// app.get('/order-details/:orderId', async (req, res) => {
-//     try {
-//         const { orderId } = req.params;
-//         console.log('Fetching single order with ID:', orderId);
-        
-//         const db = mongoose.connection.db;
-//         const order = await db.collection('orders').findOne({ orderId: orderId });
-        
-//         console.log('Found order:', order);
-        
-//         if (!order) {
-//             console.log('Order not found for ID:', orderId);
-//             return res.status(404).json({
-//                 success: false,
-//                 error: 'Order not found'
-//             });
-//         }
-        
-//         const formattedOrder = {
-//             id: order._id,
-//             orderId: order.orderId,
-//             customer: order.customerName,
-//             product: order.product,
-//             amount: order.amount,
-//             status: order.paymentStatus,
-//             date: order.dateOfOrder,
-//             shippingAddress: order.shippingAddress
-//         };
-        
-//         console.log('Sending formatted order:', formattedOrder);
-        
-//         res.json({
-//             success: true,
-//             data: formattedOrder
-//         });
-//     } catch (error) {
-//         console.error('Error fetching single order:', error);
-//         res.status(500).json({
-//             success: false,
-//             error: 'Failed to fetch order details',
-//             message: error.message
-//         });
-//     }
-// });
-
-// // PayPal routes (existing)
-// app.post('/create-paypal-order', async (req, res) => {
-//     console.log('Received request to create PayPal order');
-    
-//     const { amount, currency = 'GBP' } = req.body;
-    
-//     if (!amount) {
-//         return res.status(400).json({ error: 'Amount is required' });
-//     }
-    
-//     try {
-//         const auth = Buffer.from(
-//             `${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET_KEY}`
-//         ).toString('base64');
-
-//         const tokenRes = await axios.post(
-//             'https://api-m.sandbox.paypal.com/v1/oauth2/token',
-//             'grant_type=client_credentials',
-//             {
-//                 headers: {
-//                     'Content-Type': 'application/x-www-form-urlencoded',
-//                     'Authorization': `Basic ${auth}`,
-//                 },
-//             }
-//         );
-
-//         const accessToken = tokenRes.data.access_token;
-
-//         const orderRes = await axios.post(
-//             'https://api-m.sandbox.paypal.com/v2/checkout/orders',
-//             {
-//                 intent: 'CAPTURE',
-//                 purchase_units: [
-//                     {
-//                         amount: {
-//                             currency_code: currency,
-//                             value: amount.toString(),
-//                         },
-//                     },
-//                 ],
-//                 application_context: {
-//                     return_url: 'http://localhost:5173/platebuilder#',
-//                     cancel_url: 'http://localhost:5173/platebuilder#',
-//                 },
-//             },
-//             {
-//                 headers: {
-//                     'Content-Type': 'application/json',
-//                     'Authorization': `Bearer ${accessToken}`,
-//                 },
-//             }
-//         );
-
-//         res.json(orderRes.data);
-//     } catch (err) {
-//         console.error('Error creating PayPal order:', err.response ? err.response.data : err.message);
-//         res.status(500).json({ 
-//             error: 'Failed to create PayPal order',
-//             details: err.response ? err.response.data : err.message
-//         });
-//     }
-// });
-
-// app.post('/capture-paypal-order/:orderId', async (req, res) => {
-//     const { orderId } = req.params;
-//     try {
-//         const auth = Buffer.from(
-//             `${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET_KEY}`
-//         ).toString('base64');
-
-//         const tokenRes = await axios.post(
-//             'https://api-m.sandbox.paypal.com/v1/oauth2/token',
-//             'grant_type=client_credentials',
-//             {
-//                 headers: {
-//                     'Content-Type': 'application/x-www-form-urlencoded',
-//                     'Authorization': `Basic ${auth}`,
-//                 },
-//             }
-//         );
-
-//         const accessToken = tokenRes.data.access_token;
-
-//         const captureRes = await axios.post(
-//             `https://api-m.sandbox.paypal.com/v2/checkout/orders/${orderId}/capture`,
-//             {},
-//             {
-//                 headers: {
-//                     'Content-Type': 'application/json',
-//                     'Authorization': `Bearer ${accessToken}`,
-//                 },
-//             }
-//         );
-
-//         res.json(captureRes.data);
-//     } catch (err) {
-//         console.error('Error capturing PayPal order:', err.response ? err.response.data : err.message);
-//         res.status(500).json({ 
-//             error: 'Failed to capture PayPal order',
-//             details: err.response ? err.response.data : err.message
-//         });
-//     }
-// });
-
-// app.get('/paypal-order/:orderId', async (req, res) => {
-//     const { orderId } = req.params;
-//     try {
-//         const auth = Buffer.from(
-//             `${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET_KEY}`
-//         ).toString('base64');
-
-//         const tokenRes = await axios.post(
-//             'https://api-m.sandbox.paypal.com/v1/oauth2/token',
-//             'grant_type=client_credentials',
-//             {
-//                 headers: {
-//                     'Content-Type': 'application/x-www-form-urlencoded',
-//                     'Authorization': `Basic ${auth}`,
-//                 },
-//             }
-//         );
-
-//         const accessToken = tokenRes.data.access_token;
-
-//         const orderRes = await axios.get(
-//             `https://api-m.sandbox.paypal.com/v2/checkout/orders/${orderId}`,
-//             {
-//                 headers: {
-//                     'Content-Type': 'application/json',
-//                     'Authorization': `Bearer ${accessToken}`,
-//                 },
-//             }
-//         );
-
-//         res.json(orderRes.data);
-//     } catch (err) {
-//         console.error('Error fetching PayPal order:', err.response ? err.response.data : err.message);
-//         res.status(500).json({ 
-//             error: 'Failed to fetch PayPal order',
-//             details: err.response ? err.response.data : err.message
-//         });
-//     }
-// });
-
-// app.listen(PORT, () => {
-//     console.log(`Server running on http://localhost:${PORT}`);
-// });
-
-
-
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
@@ -1444,8 +780,9 @@ app.post('/create-paypal-order', async (req, res) => {
                     },
                 ],
                 application_context: {
-                    return_url: 'http://localhost:5173/payment-success',
-                    cancel_url: 'http://localhost:5173/cart',
+                    // Updated return URLs to work with unified success page
+                    return_url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/payment-success`,
+                    cancel_url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/cart`,
                 },
             },
             {
@@ -1461,6 +798,139 @@ app.post('/create-paypal-order', async (req, res) => {
         console.error('Error creating PayPal order:', err.response ? err.response.data : err.message);
         res.status(500).json({ 
             error: 'Failed to create PayPal order',
+            details: err.response ? err.response.data : err.message
+        });
+    }
+});
+
+app.post('/capture-paypal-order/:orderId', async (req, res) => {
+    const { orderId } = req.params;
+    const { payerId, sessionId, customerInfo, shippingAddress, pricing } = req.body;
+    
+    try {
+        const auth = Buffer.from(
+            `${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET_KEY}`
+        ).toString('base64');
+
+        const tokenRes = await axios.post(
+            'https://api-m.sandbox.paypal.com/v1/oauth2/token',
+            'grant_type=client_credentials',
+            {
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'Authorization': `Basic ${auth}`,
+                },
+            }
+        );
+
+        const accessToken = tokenRes.data.access_token;
+
+        const captureRes = await axios.post(
+            `https://api-m.sandbox.paypal.com/v2/checkout/orders/${orderId}/capture`,
+            {},
+            {
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${accessToken}`,
+                },
+            }
+        );
+
+        console.log('PayPal capture response:', captureRes.data);
+
+        // If payment successful, create order in database (similar to Worldpay flow)
+        if (captureRes.data.status === 'COMPLETED') {
+            try {
+                // Generate our internal order ID
+                const internalOrderId = `PAY_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+                
+                // Extract payment details from PayPal response
+                const paymentDetails = captureRes.data.purchase_units[0].payments.captures[0];
+                const amount = parseFloat(paymentDetails.amount.value);
+                
+                // Create order in database
+                const order = new Order({
+                    orderId: internalOrderId,
+                    customerName: customerInfo?.name || 'PayPal Customer',
+                    customerEmail: customerInfo?.email || paymentDetails.payee?.email_address || '',
+                    customerPhone: customerInfo?.phone || '',
+                    product: 'Number Plates via PayPal',
+                    amount: amount,
+                    paymentStatus: 'paid',
+                    dateOfOrder: new Date(),
+                    
+                    // PayPal specific data
+                    paypalOrderId: orderId,
+                    paypalPaymentId: paymentDetails.id,
+                    
+                    // If you have detailed item/pricing info, include it
+                    items: pricing?.items || [],
+                    pricing: pricing || {
+                        subtotal: amount,
+                        discount: 0,
+                        shipping: 0,
+                        tax: 0,
+                        total: amount
+                    },
+                    
+                    shippingAddress: shippingAddress || {
+                        street: paymentDetails.shipping?.address?.address_line_1 || 'N/A',
+                        city: paymentDetails.shipping?.address?.admin_area_2 || 'N/A',
+                        state: paymentDetails.shipping?.address?.admin_area_1 || 'N/A',
+                        pincode: paymentDetails.shipping?.address?.postal_code || 'N/A',
+                        country: paymentDetails.shipping?.address?.country_code || 'GB',
+                        phone: customerInfo?.phone || 'N/A'
+                    }
+                });
+                
+                await order.save();
+                console.log('PayPal order saved to database:', internalOrderId);
+                
+                // Clear cart items if sessionId provided
+                if (sessionId) {
+                    await CartItem.deleteMany({ sessionId });
+                    console.log('Cart cleared for session:', sessionId);
+                }
+                
+                // Return success response that matches frontend expectations
+                res.json({
+                    success: true,
+                    status: 'COMPLETED',
+                    orderId: internalOrderId,
+                    paymentId: paymentDetails.id,
+                    amount: amount,
+                    currency: paymentDetails.amount.currency_code,
+                    provider: 'paypal',
+                    captureData: captureRes.data,
+                    // Include original PayPal response for frontend
+                    ...captureRes.data
+                });
+                
+            } catch (dbError) {
+                console.error('Error saving PayPal order to database:', dbError);
+                // Still return success since PayPal payment was captured
+                res.json({
+                    success: true,
+                    status: 'COMPLETED',
+                    warning: 'Payment captured but order saving failed',
+                    captureData: captureRes.data,
+                    ...captureRes.data
+                });
+            }
+        } else {
+            res.status(400).json({
+                success: false,
+                error: 'Payment not completed',
+                status: captureRes.data.status,
+                details: captureRes.data
+            });
+        }
+
+    } catch (err) {
+        console.error('Error capturing PayPal order:', err.response ? err.response.data : err.message);
+        res.status(500).json({ 
+            success: false,
+            error: 'Failed to capture PayPal order',
             details: err.response ? err.response.data : err.message
         });
     }
@@ -1556,29 +1026,26 @@ app.get('/paypal-order/:orderId', async (req, res) => {
 
 // Worldpay configuration
 const WORLDPAY_CONFIG = {
-    test: {
-        url: 'https://try.access.worldpay.com',
-        // You'll need to replace these with your actual test credentials
-        username: 'your_test_username',
-        password: 'your_test_password'
-    },
-    live: {
-        url: 'https://access.worldpay.com',
-        // You'll need to replace these with your actual live credentials
-        username: 'your_live_username', 
-        password: 'your_live_password'
-    }
+  test: {
+    url: 'https://try.access.worldpay.com',
+    username: process.env.WORLDPAY_TEST_USERNAME || 'merchant.test',
+    password: process.env.WORLDPAY_TEST_PASSWORD || 'test'
+  },
+  live: {
+    url: 'https://access.worldpay.com',
+    username: process.env.WORLDPAY_LIVE_USERNAME,
+    password: process.env.WORLDPAY_LIVE_PASSWORD
+  }
 };
 
-// Use test environment for now
 const isProduction = process.env.NODE_ENV === 'production';
 const worldpayConfig = isProduction ? WORLDPAY_CONFIG.live : WORLDPAY_CONFIG.test;
 
-// Helper function to create Worldpay auth header
 const getWorldpayAuthHeader = () => {
-    const credentials = Buffer.from(`${worldpayConfig.username}:${worldpayConfig.password}`).toString('base64');
-    return `Basic ${credentials}`;
+  const credentials = Buffer.from(`${worldpayConfig.username}:${worldpayConfig.password}`).toString('base64');
+  return `Basic ${credentials}`;
 };
+
 
 // Helper function to generate unique transaction reference
 const generateTransactionReference = () => {
@@ -1644,7 +1111,8 @@ app.post('/create-worldpay-payment', async (req, res) => {
         console.log('Worldpay payload:', JSON.stringify(worldpayPayload, null, 2));
 
         const response = await axios.post(
-            `${worldpayConfig.url}/cardPayments/customerInitiatedTransactions`,
+            // `${worldpayConfig.url}/cardPayments/customerInitiatedTransactions`,
+            `${worldpayConfig.url}/api/payments`,
             worldpayPayload,
             {
                 headers: {
