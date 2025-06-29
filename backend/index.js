@@ -95,60 +95,191 @@ const configurationSchema = new mongoose.Schema({
     updatedAt: { type: Date, default: Date.now }
 });
 
-// Order Schema (updated to include cart data)
 const orderSchema = new mongoose.Schema({
     orderId: { type: String, required: true, unique: true },
-    customerName: { type: String, required: true },
-    customerEmail: String,
-    customerPhone: String,
-    product: { type: String, required: true },
-    amount: { type: Number, required: true },
-    paymentStatus: { type: String, required: true },
-    dateOfOrder: { type: Date, required: true },
     
-    // Cart items included in the order
-    items: [{
-        name: String,
-        type: String,
-        price: Number,
-        quantity: Number,
-        subtotal: Number,
-        plateDetails: {
-            side: String,
-            registration: String,
-            roadLegal: String,
-            size: String,
-            plateStyle: String,
-            fontColor: String,
-            borderStyle: String,
-            shadowEffect: String
-        }
-    }],
-    
-    // Pricing breakdown
-    pricing: {
-        subtotal: Number,
-        discount: Number,
-        discountCode: String,
-        shipping: Number,
-        shippingMethod: String,
-        tax: Number,
-        total: Number
+    // Enhanced Customer Information
+    customer: {
+        firstName: { type: String, required: true },
+        lastName: { type: String, required: true },
+        email: { type: String, required: true },
+        phone: { type: String, required: true },
+        address: { type: String, required: true },
+        city: { type: String, required: true },
+        postcode: { type: String, required: true },
+        country: { type: String, required: true, default: 'IN' }
     },
     
-    // PayPal specific data
-    paypalOrderId: String,
-    paypalPaymentId: String,
+    // Order Status - NO ENUM
+    orderStatus: { 
+        type: String,
+        default: 'pending'
+    },
+    paymentStatus: { 
+        type: String,
+        default: 'pending'
+    },
     
-    shippingAddress: {
-        street: { type: String, required: true },
-        city: { type: String, required: true },
-        state: { type: String, required: true },
-        pincode: { type: String, required: true },
-        country: { type: String, required: true },
-        phone: { type: String, required: true }
-    }
+    // Enhanced Items with Complete Plate Configuration
+    items: [{
+        // Basic Item Info
+        name: { type: String, required: true },
+        type: { type: String, required: true }, // NO ENUM
+        price: { type: Number, required: true, min: 0 },
+        quantity: { type: Number, required: true, min: 1 },
+        subtotal: { type: Number, required: true, min: 0 },
+        
+        // Complete Plate Configuration Details
+        plateConfiguration: new mongoose.Schema({
+            // Text and Spacing
+            text: { type: String, required: true },
+            spacing: { type: String, default: 'legal' }, // NO ENUM
+            displayText: { type: String },
+            
+            // Physical Properties - NO ENUM
+            side: { type: String },
+            
+            // Size Configuration
+            size: new mongoose.Schema({
+                key: String,
+                label: String,
+                dimensions: String
+            }, { _id: false }),
+            
+            // Style Configuration
+            plateStyle: new mongoose.Schema({
+                key: String,
+                label: String,
+                font: String,
+                fontSize: Number,
+                price: Number
+            }, { _id: false }),
+            
+            // Color Configuration
+            fontColor: new mongoose.Schema({
+                key: String,
+                name: String,
+                color: String,
+                price: Number
+            }, { _id: false }),
+            
+            // Border Configuration
+            border: new mongoose.Schema({
+                key: String,
+                name: String,
+                type: String,
+                color: String,
+                borderWidth: Number,
+                price: Number
+            }, { _id: false }),
+            
+            // Country Badge Configuration
+            countryBadge: new mongoose.Schema({
+                key: String,
+                name: String,
+                country: String,
+                flagImage: String,
+                position: String,
+                price: Number
+            }, { _id: false }),
+            
+            // Finish Configuration
+            finish: new mongoose.Schema({
+                key: String,
+                label: String,
+                description: String,
+                price: Number
+            }, { _id: false }),
+            
+            // Additional Options
+            thickness: new mongoose.Schema({
+                key: String,
+                label: String,
+                value: Number,
+                price: Number
+            }, { _id: false }),
+            
+            // Shadow Effect
+            shadowEffect: new mongoose.Schema({
+                key: String,
+                name: String,
+                description: String,
+                price: Number
+            }, { _id: false }),
+            
+            // Legal and Compliance - NO ENUM
+            roadLegal: { type: String, default: 'No' },
+            legalNotes: { type: String }
+        }, { _id: false })
+    }],
+    
+    // Enhanced Pricing Breakdown
+    pricing: {
+        subtotal: { type: Number, required: true },
+        discount: { type: Number, default: 0 },
+        discountCode: { type: String },
+        discountDescription: { type: String },
+        shipping: { type: Number, default: 0 },
+        shippingMethod: { 
+            type: String,
+            default: 'tracked'
+        },
+        tax: { type: Number, required: true },
+        taxRate: { type: Number, default: 0.18 },
+        total: { type: Number, required: true }
+    },
+    
+    // Payment Information - NO ENUM
+    payment: {
+        provider: { 
+            type: String,
+            required: true 
+        },
+        paypalOrderId: { type: String },
+        paypalPaymentId: { type: String },
+        worldpayPaymentId: { type: String },
+        worldpayTransactionRef: { type: String },
+        transactionId: { type: String },
+        amount: { type: Number, required: true },
+        currency: { type: String, default: 'GBP' }
+    },
+    
+    // Original Cart Data (for restoration if payment fails)
+    originalCartData: { type: mongoose.Schema.Types.Mixed },
+    
+    // Order Timeline
+    dates: {
+        ordered: { type: Date, required: true, default: Date.now },
+        paid: { type: Date },
+        processing: { type: Date },
+        shipped: { type: Date },
+        delivered: { type: Date }
+    },
+    
+    // Additional Information
+    notes: { type: String },
+    adminNotes: { type: String },
+    trackingNumber: { type: String },
+    
+    // System Fields
+    createdAt: { type: Date, default: Date.now },
+    updatedAt: { type: Date, default: Date.now }
 });
+
+// Add indexes for better query performance
+orderSchema.index({ orderId: 1 });
+orderSchema.index({ 'customer.email': 1 });
+orderSchema.index({ orderStatus: 1 });
+orderSchema.index({ paymentStatus: 1 });
+orderSchema.index({ 'dates.ordered': -1 });
+
+// Add a pre-save middleware to update the updatedAt field
+orderSchema.pre('save', function(next) {
+    this.updatedAt = Date.now();
+    next();
+});
+
+
 
 // Compound index for efficient queries
 configurationSchema.index({ type: 1, key: 1 }, { unique: true });
@@ -381,11 +512,6 @@ app.post('/api/cart/coupon', async (req, res) => {
     }
 });
 
-// ===============================
-// PAYPAL CHECKOUT INTEGRATION (UPDATED)
-// ===============================
-
-// Create PayPal order from cart
 app.post('/api/checkout/create-order', async (req, res) => {
     try {
         const { 
@@ -733,6 +859,87 @@ app.get('/health', (req, res) => {
     res.json({ status: 'ok' });
 });
 
+// ADMIN DASHBOARD ROUTES (MISSING)
+// ===============================
+
+// Get all orders for admin dashboard - ADD THIS ROUTE
+app.get('/order-details', async (req, res) => {
+    try {
+        const orders = await Order.find({})
+            .sort({ 'dates.ordered': -1 })
+            .limit(50); // Limit to latest 50 orders for performance
+        
+        // Transform orders to match frontend expectations
+        const transformedOrders = orders.map(order => ({
+            id: order._id,
+            orderId: order.orderId, // This will be the new Amazon-style format
+            customer: order.customer?.firstName ? 
+                `${order.customer.firstName} ${order.customer.lastName}` : 
+                order.customerName || 'Unknown Customer',
+            product: order.items && order.items.length > 0 ? 
+                `${order.items.length} plate(s)` : 
+                order.product || 'Number Plate',
+            amount: order.pricing?.total || order.amount || 0,
+            status: order.paymentStatus || 'pending',
+            date: order.dates?.ordered || order.dateOfOrder || order.createdAt
+        }));
+        
+        res.json({
+            success: true,
+            data: transformedOrders
+        });
+        
+    } catch (error) {
+        console.error('Error fetching orders for admin:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to fetch orders'
+        });
+    }
+});
+
+// Get single order details for admin modal - ADD THIS ROUTE
+app.get('/order-details/:orderId', async (req, res) => {
+    try {
+        const { orderId } = req.params;
+        const order = await Order.findOne({ orderId });
+        
+        if (!order) {
+            return res.status(404).json({
+                success: false,
+                error: 'Order not found'
+            });
+        }
+        
+        res.json({
+            success: true,
+            data: order
+        });
+        
+    } catch (error) {
+        console.error('Error fetching order details:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to fetch order details'
+        });
+    }
+});
+
+// ===============================
+// HELPER FUNCTIONS - ADD THESE
+// ===============================
+
+// Generate Amazon-style order number (10 digits exactly)
+const generateAmazonStyleOrderNumber = () => {
+    // Generate three groups of numbers separated by hyphens
+    // Format: XXX-XXXXXXX-XXXXXXX (3-7-7 digits)
+    const group1 = Math.floor(Math.random() * 900) + 100; // 3 digits (100-999)
+    const group2 = Math.floor(Math.random() * 9000000) + 1000000; // 7 digits
+    const group3 = Math.floor(Math.random() * 9000000) + 1000000; // 7 digits
+    
+    return `${group1}-${group2}-${group3}`;
+};
+
 // Add these endpoints to your server.js file (before app.listen)
 
 // ===============================
@@ -803,11 +1010,41 @@ app.post('/create-paypal-order', async (req, res) => {
     }
 });
 
+// ===============================
+// UPDATE PAYPAL CAPTURE ENDPOINT
+// ===============================
+
+// REPLACE your existing capture-paypal-order endpoint with this updated version
 app.post('/capture-paypal-order/:orderId', async (req, res) => {
     const { orderId } = req.params;
-    const { payerId, sessionId, customerInfo, shippingAddress, pricing } = req.body;
+    const { 
+        payerId, 
+        sessionId, 
+        customerInfo, 
+        shippingAddress, 
+        pricing,
+        cartItems
+    } = req.body;
     
     try {
+        // STEP 1: Check if we already processed this PayPal order
+        const existingOrder = await Order.findOne({ 'payment.paypalOrderId': orderId });
+        if (existingOrder) {
+            console.log('Order already processed:', existingOrder.orderId);
+            console.log('Returning existing order details:', JSON.stringify(existingOrder, null, 2));
+            return res.json({
+                success: true,
+                status: 'COMPLETED',
+                orderId: existingOrder.orderId,
+                paymentId: existingOrder.payment.paypalPaymentId,
+                amount: existingOrder.payment.amount,
+                currency: existingOrder.payment.currency,
+                provider: 'paypal',
+                message: 'Order already processed successfully'
+            });
+        }
+
+        // STEP 2: Get PayPal Access Token
         const auth = Buffer.from(
             `${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET_KEY}`
         ).toString('base64');
@@ -825,66 +1062,255 @@ app.post('/capture-paypal-order/:orderId', async (req, res) => {
 
         const accessToken = tokenRes.data.access_token;
 
-        const captureRes = await axios.post(
-            `https://api-m.sandbox.paypal.com/v2/checkout/orders/${orderId}/capture`,
-            {},
-            {
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${accessToken}`,
-                },
+        // STEP 3: Try to capture the PayPal order
+        let captureRes;
+        try {
+            captureRes = await axios.post(
+                `https://api-m.sandbox.paypal.com/v2/checkout/orders/${orderId}/capture`,
+                {},
+                {
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${accessToken}`,
+                    },
+                }
+            );
+        } catch (captureError) {
+            // Handle "ORDER_ALREADY_CAPTURED" error
+            if (captureError.response?.data?.details?.[0]?.issue === 'ORDER_ALREADY_CAPTURED') {
+                console.log('PayPal order already captured, fetching order details...');
+                
+                // Fetch the existing order details from PayPal
+                try {
+                    const orderDetailsRes = await axios.get(
+                        `https://api-m.sandbox.paypal.com/v2/checkout/orders/${orderId}`,
+                        {
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Authorization': `Bearer ${accessToken}`,
+                            },
+                        }
+                    );
+                    
+                    captureRes = { data: orderDetailsRes.data };
+                } catch (detailsError) {
+                    console.error('Error fetching PayPal order details:', detailsError.response?.data);
+                    throw captureError; // Re-throw original error
+                }
+            } else {
+                throw captureError; // Re-throw if it's a different error
             }
-        );
+        }
 
-        console.log('PayPal capture response:', captureRes.data);
+        console.log('PayPal capture/order response:', captureRes.data);
 
-        // If payment successful, create order in database (similar to Worldpay flow)
+        // STEP 4: Process the order if payment is completed
         if (captureRes.data.status === 'COMPLETED') {
             try {
-                // Generate our internal order ID
-                const internalOrderId = `PAY_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+                // Generate Amazon-style order number (FIXED)
+                const internalOrderId = generateAmazonStyleOrderNumber();
                 
-                // Extract payment details from PayPal response
-                const paymentDetails = captureRes.data.purchase_units[0].payments.captures[0];
-                const amount = parseFloat(paymentDetails.amount.value);
+                // Extract payment details - handle both capture response and order details response
+                let paymentDetails;
+                let amount;
                 
-                // Create order in database
-                const order = new Order({
-                    orderId: internalOrderId,
-                    customerName: customerInfo?.name || 'PayPal Customer',
-                    customerEmail: customerInfo?.email || paymentDetails.payee?.email_address || '',
-                    customerPhone: customerInfo?.phone || '',
-                    product: 'Number Plates via PayPal',
-                    amount: amount,
-                    paymentStatus: 'paid',
-                    dateOfOrder: new Date(),
+                if (captureRes.data.purchase_units?.[0]?.payments?.captures?.[0]) {
+                    // This is a capture response
+                    paymentDetails = captureRes.data.purchase_units[0].payments.captures[0];
+                    amount = parseFloat(paymentDetails.amount.value);
+                } else if (captureRes.data.purchase_units?.[0]?.amount?.value) {
+                    // This is an order details response
+                    const purchaseUnit = captureRes.data.purchase_units[0];
+                    amount = parseFloat(purchaseUnit.amount.value);
+                    paymentDetails = {
+                        id: orderId,
+                        amount: purchaseUnit.amount,
+                        // Create mock payment details structure
+                        payee: { email_address: captureRes.data.payer?.email_address }
+                    };
+                } else {
+                    throw new Error('Unable to extract payment details from PayPal response');
+                }
+                
+                // Get cart items or create fallback
+                let orderItems = cartItems;
+                if (!orderItems && sessionId) {
+                    const dbCartItems = await CartItem.find({ sessionId });
+                    orderItems = dbCartItems;
+                }
+                
+                // Transform cart items to proper format with correct nested objects
+                const enhancedItems = (orderItems || []).map(item => ({
+                    name: item.name || 'Number Plate',
+                    type: item.type || 'plate',
+                    price: item.price || 0,
+                    quantity: item.quantity || 1,
+                    subtotal: item.subtotal || (item.price * item.quantity) || 0,
                     
-                    // PayPal specific data
-                    paypalOrderId: orderId,
-                    paypalPaymentId: paymentDetails.id,
-                    
-                    // If you have detailed item/pricing info, include it
-                    items: pricing?.items || [],
-                    pricing: pricing || {
+                    plateConfiguration: {
+                        // Text and Spacing
+                        text: item.registration || item.plateDetails?.registration || 'UNKNOWN',
+                        spacing: item.spacing || 'legal',
+                        displayText: item.displayText || item.registration || 'UNKNOWN',
+                        
+                        // Physical Properties  
+                        side: item.side || item.plateDetails?.side || 'front',
+                        
+                        // All nested objects properly structured
+                        size: {
+                            key: item.size || item.plateDetails?.size || 'standard',
+                            label: item.sizeLabel || 'Standard Size',
+                            dimensions: item.sizeDimensions || '520mm x 111mm'
+                        },
+                        
+                        plateStyle: {
+                            key: item.plateStyle || item.plateDetails?.plateStyle || 'standard',
+                            label: item.styleLabel || 'Standard Plate',
+                            font: item.font || 'Charles Wright',
+                            fontSize: item.fontSize || 79,
+                            price: item.stylePrice || 0
+                        },
+                        
+                        fontColor: {
+                            key: item.fontColor || item.plateDetails?.fontColor || 'black',
+                            name: item.fontColorName || 'Black',
+                            color: item.fontColor || '#000000',
+                            price: item.fontColorPrice || 0
+                        },
+                        
+                        border: {
+                            key: item.borderStyle || item.plateDetails?.borderStyle || 'none',
+                            name: item.borderName || 'No Border',
+                            type: item.borderType || 'none',
+                            color: item.borderColor || '',
+                            borderWidth: item.borderWidth || 0,
+                            price: item.borderPrice || 0
+                        },
+                        
+                        countryBadge: {
+                            key: item.countryBadge || 'none',
+                            name: item.badgeName || 'No Badge',
+                            country: item.selectedCountry || 'uk',
+                            flagImage: item.flagImage || '',
+                            position: item.badgePosition || 'left',
+                            price: item.badgePrice || 0
+                        },
+                        
+                        finish: {
+                            key: item.finish || 'standard',
+                            label: item.finishLabel || 'Standard Finish',
+                            description: item.finishDescription || '',
+                            price: item.finishPrice || 0
+                        },
+                        
+                        thickness: {
+                            key: item.thickness || '3mm',
+                            label: item.thicknessLabel || '3mm Standard',
+                            value: item.thicknessValue || 3,
+                            price: item.thicknessPrice || 0
+                        },
+                        
+                        shadowEffect: {
+                            key: item.shadowEffect || item.plateDetails?.shadowEffect || 'none',
+                            name: item.shadowName || 'No Effect',
+                            description: item.shadowDescription || '',
+                            price: item.shadowPrice || 0
+                        },
+                        
+                        // Legal and Compliance
+                        roadLegal: item.roadLegal || item.plateDetails?.roadLegal || 'No',
+                        legalNotes: item.roadLegal === 'No' ? 'Show plates only - not for road use' : ''
+                    }
+                }));
+
+                // If no items, create a fallback item
+                if (enhancedItems.length === 0) {
+                    enhancedItems.push({
+                        name: 'Number Plate',
+                        type: 'plate',
+                        price: amount,
+                        quantity: 1,
                         subtotal: amount,
-                        discount: 0,
-                        shipping: 0,
-                        tax: 0,
-                        total: amount
+                        plateConfiguration: {
+                            text: 'UNKNOWN',
+                            spacing: 'legal',
+                            displayText: 'UNKNOWN',
+                            side: 'front',
+                            size: { key: 'standard', label: 'Standard Size', dimensions: '520mm x 111mm' },
+                            plateStyle: { key: 'standard', label: 'Standard Plate', font: 'Charles Wright', fontSize: 79, price: 0 },
+                            fontColor: { key: 'black', name: 'Black', color: '#000000', price: 0 },
+                            border: { key: 'none', name: 'No Border', type: 'none', color: '', borderWidth: 0, price: 0 },
+                            countryBadge: { key: 'none', name: 'No Badge', country: 'uk', flagImage: '', position: 'left', price: 0 },
+                            finish: { key: 'standard', label: 'Standard Finish', description: '', price: 0 },
+                            thickness: { key: '3mm', label: '3mm Standard', value: 3, price: 0 },
+                            shadowEffect: { key: 'none', name: 'No Effect', description: '', price: 0 },
+                            roadLegal: 'No',
+                            legalNotes: 'Show plates only - not for road use'
+                        }
+                    });
+                }
+                
+                // Create enhanced order with complete details
+                const order = new Order({
+                    orderId: internalOrderId, // NOW AMAZON-STYLE FORMAT
+                    
+                    customer: {
+                        firstName: customerInfo?.name?.split(' ')[0] || captureRes.data.payer?.name?.given_name || 'PayPal',
+                        lastName: customerInfo?.name?.split(' ')[1] || captureRes.data.payer?.name?.surname || 'Customer',
+                        email: customerInfo?.email || captureRes.data.payer?.email_address || 'customer@example.com',
+                        phone: customerInfo?.phone || shippingAddress?.phone || '',
+                        address: shippingAddress?.street || 'Not provided',
+                        city: shippingAddress?.city || 'Not provided',
+                        postcode: shippingAddress?.postcode || 'Not provided',
+                        country: shippingAddress?.country || 'GB'
                     },
                     
-                    shippingAddress: shippingAddress || {
-                        street: paymentDetails.shipping?.address?.address_line_1 || 'N/A',
-                        city: paymentDetails.shipping?.address?.admin_area_2 || 'N/A',
-                        state: paymentDetails.shipping?.address?.admin_area_1 || 'N/A',
-                        pincode: paymentDetails.shipping?.address?.postal_code || 'N/A',
-                        country: paymentDetails.shipping?.address?.country_code || 'GB',
-                        phone: customerInfo?.phone || 'N/A'
-                    }
+                    orderStatus: 'processing',
+                    paymentStatus: 'paid',
+                    
+                    items: enhancedItems,
+                    
+                    pricing: {
+                        subtotal: pricing?.subtotal || amount,
+                        discount: pricing?.discount || 0,
+                        discountCode: pricing?.discountCode || '',
+                        discountDescription: pricing?.discountDescription || '',
+                        shipping: pricing?.shipping || 0,
+                        shippingMethod: pricing?.shippingMethod || 'tracked',
+                        tax: pricing?.tax || 0,
+                        taxRate: pricing?.taxRate || 0.20,
+                        total: pricing?.total || amount
+                    },
+                    
+                    shippingAddress: {
+                        name: shippingAddress?.name || customerInfo?.name || 'Customer',
+                        street: shippingAddress?.street || 'Not provided',
+                        city: shippingAddress?.city || 'Not provided',
+                        state: shippingAddress?.state || '',
+                        postcode: shippingAddress?.postcode || 'Not provided',
+                        country: shippingAddress?.country || 'GB',
+                        phone: shippingAddress?.phone || customerInfo?.phone || ''
+                    },
+                    
+                    payment: {
+                        provider: 'paypal',
+                        paypalOrderId: orderId,
+                        paypalPaymentId: paymentDetails.id, // THIS IS THE TRANSACTION ID
+                        transactionId: paymentDetails.id,  // DUPLICATE FOR CLARITY
+                        amount: amount,
+                        currency: paymentDetails.amount?.currency_code || 'GBP'
+                    },
+                    
+                    dates: {
+                        ordered: new Date(),
+                        paid: new Date()
+                    },
+                    
+                    notes: `Order created via PayPal. ${enhancedItems.length} item(s) ordered.`
                 });
                 
                 await order.save();
-                console.log('PayPal order saved to database:', internalOrderId);
+                console.log('Enhanced order saved successfully:', internalOrderId);
                 
                 // Clear cart items if sessionId provided
                 if (sessionId) {
@@ -892,29 +1318,34 @@ app.post('/capture-paypal-order/:orderId', async (req, res) => {
                     console.log('Cart cleared for session:', sessionId);
                 }
                 
-                // Return success response that matches frontend expectations
+                console.log("abhishek was here paymentDetails:", paymentDetails);
+                // Return success response
                 res.json({
                     success: true,
                     status: 'COMPLETED',
-                    orderId: internalOrderId,
-                    paymentId: paymentDetails.id,
+                    orderId: internalOrderId, // AMAZON-STYLE ORDER NUMBER
+                    paymentId: paymentDetails.id, // PAYPAL TRANSACTION ID
                     amount: amount,
-                    currency: paymentDetails.amount.currency_code,
+                    currency: paymentDetails.amount?.currency_code || 'GBP',
                     provider: 'paypal',
-                    captureData: captureRes.data,
-                    // Include original PayPal response for frontend
-                    ...captureRes.data
+                    orderDetails: {
+                        orderId: internalOrderId,
+                        customerName: `${order.customer.firstName} ${order.customer.lastName}`,
+                        items: enhancedItems.length,
+                        total: amount
+                    },
+                    captureData: captureRes.data
                 });
                 
             } catch (dbError) {
-                console.error('Error saving PayPal order to database:', dbError);
+                console.error('Error saving enhanced order to database:', dbError);
                 // Still return success since PayPal payment was captured
                 res.json({
                     success: true,
                     status: 'COMPLETED',
                     warning: 'Payment captured but order saving failed',
-                    captureData: captureRes.data,
-                    ...captureRes.data
+                    error: dbError.message,
+                    captureData: captureRes.data
                 });
             }
         } else {
@@ -936,44 +1367,29 @@ app.post('/capture-paypal-order/:orderId', async (req, res) => {
     }
 });
 
-// Capture PayPal payment
-app.post('/capture-paypal-order/:orderId', async (req, res) => {
-    const { orderId } = req.params;
+// Additional endpoint to get order details for admin dashboard
+app.get('/admin/order-details/:orderId', authenticateToken, async (req, res) => {
     try {
-        const auth = Buffer.from(
-            `${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET_KEY}`
-        ).toString('base64');
-
-        const tokenRes = await axios.post(
-            'https://api-m.sandbox.paypal.com/v1/oauth2/token',
-            'grant_type=client_credentials',
-            {
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                    'Authorization': `Basic ${auth}`,
-                },
-            }
-        );
-
-        const accessToken = tokenRes.data.access_token;
-
-        const captureRes = await axios.post(
-            `https://api-m.sandbox.paypal.com/v2/checkout/orders/${orderId}/capture`,
-            {},
-            {
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${accessToken}`,
-                },
-            }
-        );
-
-        res.json(captureRes.data);
-    } catch (err) {
-        console.error('Error capturing PayPal order:', err.response ? err.response.data : err.message);
-        res.status(500).json({ 
-            error: 'Failed to capture PayPal order',
-            details: err.response ? err.response.data : err.message
+        const { orderId } = req.params;
+        const order = await Order.findOne({ orderId });
+        
+        if (!order) {
+            return res.status(404).json({
+                success: false,
+                error: 'Order not found'
+            });
+        }
+        
+        res.json({
+            success: true,
+            data: order
+        });
+        
+    } catch (error) {
+        console.error('Error fetching order details:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to fetch order details'
         });
     }
 });
@@ -1018,6 +1434,509 @@ app.get('/paypal-order/:orderId', async (req, res) => {
         });
     }
 });
+
+// Step 3: Order Creation Endpoint - Add to your index.js
+
+// Create Order Endpoint (called when user fills checkout form)
+app.post('/api/orders/create', async (req, res) => {
+    try {
+        const { customer, items, pricing, originalCartData } = req.body;
+        
+        // Validate required fields
+        if (!customer || !items || !pricing) {
+            return res.status(400).json({
+                success: false,
+                error: 'Missing required order data'
+            });
+        }
+        
+        // Generate internal order ID
+        const orderId = `ORD_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        
+        console.log('Creating order:', orderId);
+        
+        // Create order with pending payment status
+        const order = new Order({
+            orderId,
+            customer,
+            orderStatus: 'pending',
+            paymentStatus: 'pending',
+            items,
+            pricing,
+            originalCartData: originalCartData || [],
+            payment: {
+                provider: 'paypal',
+                amount: pricing.total,
+                currency: 'GBP'
+            },
+            dates: {
+                ordered: new Date()
+            },
+            notes: `Order created with ${items.length} item(s). Awaiting PayPal payment.`
+        });
+        
+        await order.save();
+        console.log('Order created successfully:', orderId);
+        
+        res.json({
+            success: true,
+            orderId,
+            message: 'Order created successfully'
+        });
+        
+    } catch (error) {
+        console.error('Error creating order:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to create order',
+            details: error.message
+        });
+    }
+});
+
+// Update Payment Failure Endpoint
+app.post('/api/orders/:orderId/payment-failed', async (req, res) => {
+    try {
+        const { orderId } = req.params;
+        const { reason } = req.body;
+        
+        const order = await Order.findOneAndUpdate(
+            { orderId },
+            { 
+                paymentStatus: 'failed',
+                orderStatus: 'cancelled',
+                notes: `Payment failed: ${reason || 'Unknown reason'}`,
+                updatedAt: new Date()
+            },
+            { new: true }
+        );
+        
+        if (!order) {
+            return res.status(404).json({
+                success: false,
+                error: 'Order not found'
+            });
+        }
+        
+        console.log('Order payment failed:', orderId);
+        
+        // Return original cart data for restoration
+        res.json({
+            success: true,
+            originalCartData: order.originalCartData,
+            message: 'Payment failed, cart data available for restoration'
+        });
+        
+    } catch (error) {
+        console.error('Error updating payment failure:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to update payment failure status'
+        });
+    }
+});
+
+// Get Order Details Endpoint
+app.get('/api/orders/:orderId', async (req, res) => {
+    try {
+        const { orderId } = req.params;
+        
+        const order = await Order.findOne({ orderId });
+        
+        if (!order) {
+            return res.status(404).json({
+                success: false,
+                error: 'Order not found'
+            });
+        }
+        
+        res.json({
+            success: true,
+            order
+        });
+        
+    } catch (error) {
+        console.error('Error fetching order:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to fetch order'
+        });
+    }
+});
+
+// Get All Orders for Admin (with pagination and filtering)
+app.get('/api/admin/orders', authenticateToken, async (req, res) => {
+    try {
+        const { 
+            page = 1, 
+            limit = 20, 
+            status, 
+            paymentStatus,
+            search 
+        } = req.query;
+        
+        // Build filter query
+        const filter = {};
+        if (status) filter.orderStatus = status;
+        if (paymentStatus) filter.paymentStatus = paymentStatus;
+        if (search) {
+            filter.$or = [
+                { orderId: { $regex: search, $options: 'i' } },
+                { 'customer.firstName': { $regex: search, $options: 'i' } },
+                { 'customer.lastName': { $regex: search, $options: 'i' } },
+                { 'customer.email': { $regex: search, $options: 'i' } }
+            ];
+        }
+        
+        // Execute query with pagination
+        const orders = await Order.find(filter)
+            .sort({ 'dates.ordered': -1 })
+            .limit(limit * 1)
+            .skip((page - 1) * limit)
+            .exec();
+        
+        const totalOrders = await Order.countDocuments(filter);
+        
+        res.json({
+            success: true,
+            orders,
+            pagination: {
+                currentPage: page,
+                totalPages: Math.ceil(totalOrders / limit),
+                totalOrders,
+                hasNext: page < Math.ceil(totalOrders / limit),
+                hasPrev: page > 1
+            }
+        });
+        
+    } catch (error) {
+        console.error('Error fetching admin orders:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to fetch orders'
+        });
+    }
+});
+
+// Update Order Status (Admin only)
+app.patch('/api/admin/orders/:orderId/status', authenticateToken, async (req, res) => {
+    try {
+        const { orderId } = req.params;
+        const { orderStatus, adminNotes, trackingNumber } = req.body;
+        
+        const updateData = {
+            updatedAt: new Date()
+        };
+        
+        if (orderStatus) {
+            updateData.orderStatus = orderStatus;
+            
+            // Update timeline dates based on status
+            if (orderStatus === 'processing' && !updateData['dates.processing']) {
+                updateData['dates.processing'] = new Date();
+            } else if (orderStatus === 'shipped' && !updateData['dates.shipped']) {
+                updateData['dates.shipped'] = new Date();
+            } else if (orderStatus === 'delivered' && !updateData['dates.delivered']) {
+                updateData['dates.delivered'] = new Date();
+            }
+        }
+        
+        if (adminNotes) updateData.adminNotes = adminNotes;
+        if (trackingNumber) updateData.trackingNumber = trackingNumber;
+        
+        const order = await Order.findOneAndUpdate(
+            { orderId },
+            updateData,
+            { new: true }
+        );
+        
+        if (!order) {
+            return res.status(404).json({
+                success: false,
+                error: 'Order not found'
+            });
+        }
+        
+        console.log('Order status updated:', orderId, orderStatus);
+        
+        res.json({
+            success: true,
+            message: 'Order updated successfully',
+            order
+        });
+        
+    } catch (error) {
+        console.error('Error updating order status:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to update order status'
+        });
+    }
+});
+
+// Get Order Details Endpoint
+app.get('/api/orders/:orderId', async (req, res) => {
+    try {
+        const { orderId } = req.params;
+        
+        const order = await Order.findOne({ orderId });
+        
+        if (!order) {
+            return res.status(404).json({
+                success: false,
+                error: 'Order not found'
+            });
+        }
+        
+        res.json({
+            success: true,
+            order
+        });
+        
+    } catch (error) {
+        console.error('Error fetching order:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to fetch order'
+        });
+    }
+});
+
+// Enhanced PayPal Capture Endpoint (simplified - uses existing order)
+app.post('/capture-paypal-order/:paypalOrderId', async (req, res) => {
+    const { paypalOrderId } = req.params;
+    
+    try {
+        // Step 1: Find existing order by PayPal order ID
+        const existingOrder = await Order.findOne({ 'payment.paypalOrderId': paypalOrderId });
+        if (!existingOrder) {
+            return res.status(404).json({
+                success: false,
+                error: 'Order not found for this PayPal transaction'
+            });
+        }
+
+        // Step 2: Check if already processed
+        if (existingOrder.paymentStatus === 'paid') {
+            console.log('Order already processed:', existingOrder.orderId);
+            console.log('Returning existing order details:', JSON.stringify(existingOrder, null, 2));
+            return res.json({
+                success: true,
+                status: 'COMPLETED',
+                orderId: existingOrder.orderId,
+                paymentId: existingOrder.payment.paypalPaymentId,
+                amount: existingOrder.payment.amount,
+                currency: existingOrder.payment.currency,
+                message: 'Order already processed successfully'
+            });
+        }
+
+        // Step 3: Capture PayPal payment
+        const auth = Buffer.from(
+            `${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET_KEY}`
+        ).toString('base64');
+
+        const tokenRes = await axios.post(
+            'https://api-m.sandbox.paypal.com/v1/oauth2/token',
+            'grant_type=client_credentials',
+            {
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'Authorization': `Basic ${auth}`,
+                },
+            }
+        );
+
+        const accessToken = tokenRes.data.access_token;
+
+        let captureRes;
+        try {
+            captureRes = await axios.post(
+                `https://api-m.sandbox.paypal.com/v2/checkout/orders/${paypalOrderId}/capture`,
+                {},
+                {
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${accessToken}`,
+                    },
+                }
+            );
+        } catch (captureError) {
+            // Handle "ORDER_ALREADY_CAPTURED" error
+            if (captureError.response?.data?.details?.[0]?.issue === 'ORDER_ALREADY_CAPTURED') {
+                console.log('PayPal order already captured, fetching order details...');
+                
+                const orderDetailsRes = await axios.get(
+                    `https://api-m.sandbox.paypal.com/v2/checkout/orders/${paypalOrderId}`,
+                    {
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${accessToken}`,
+                        },
+                    }
+                );
+                
+                captureRes = { data: orderDetailsRes.data };
+            } else {
+                throw captureError;
+            }
+        }
+
+        console.log('PayPal capture/order response:', captureRes.data);
+
+        // Step 4: Process the order if payment is completed
+        if (captureRes.data.status === 'COMPLETED') {
+            // Extract payment details
+            let paymentDetails;
+            let amount;
+            
+            if (captureRes.data.purchase_units?.[0]?.payments?.captures?.[0]) {
+                paymentDetails = captureRes.data.purchase_units[0].payments.captures[0];
+                amount = parseFloat(paymentDetails.amount.value);
+            } else if (captureRes.data.purchase_units?.[0]?.amount?.value) {
+                const purchaseUnit = captureRes.data.purchase_units[0];
+                amount = parseFloat(purchaseUnit.amount.value);
+                paymentDetails = {
+                    id: paypalOrderId,
+                    amount: purchaseUnit.amount
+                };
+            } else {
+                throw new Error('Unable to extract payment details from PayPal response');
+            }
+            
+            // Update order status to paid
+            await Order.findOneAndUpdate(
+                { orderId: existingOrder.orderId },
+                { 
+                    paymentStatus: 'paid',
+                    orderStatus: 'processing',
+                    'payment.paypalPaymentId': paymentDetails.id,
+                    'payment.transactionId': paymentDetails.id,
+                    'payment.amount': amount,
+                    'dates.paid': new Date(),
+                    updatedAt: new Date()
+                }
+            );
+            
+            console.log('Order payment completed:', existingOrder.orderId);
+            
+            // Return success response
+            res.json({
+                success: true,
+                status: 'COMPLETED',
+                orderId: existingOrder.orderId,
+                paymentId: paymentDetails.id,
+                amount: amount,
+                currency: paymentDetails.amount?.currency_code || 'GBP',
+                captureData: captureRes.data
+            });
+            
+        } else {
+            res.status(400).json({
+                success: false,
+                error: 'Payment not completed',
+                status: captureRes.data.status,
+                details: captureRes.data
+            });
+        }
+
+    } catch (err) {
+        console.error('Error capturing PayPal order:', err.response ? err.response.data : err.message);
+        res.status(500).json({ 
+            success: false,
+            error: 'Failed to capture PayPal order',
+            details: err.response ? err.response.data : err.message
+        });
+    }
+});
+
+// Update Order with PayPal Order ID
+app.patch('/api/orders/:orderId/paypal', async (req, res) => {
+    try {
+        const { orderId } = req.params;
+        const { paypalOrderId } = req.body;
+        
+        const order = await Order.findOneAndUpdate(
+            { orderId },
+            { 
+                'payment.paypalOrderId': paypalOrderId,
+                updatedAt: new Date()
+            },
+            { new: true }
+        );
+        
+        if (!order) {
+            return res.status(404).json({
+                success: false,
+                error: 'Order not found'
+            });
+        }
+        
+        console.log('Order updated with PayPal ID:', orderId, paypalOrderId);
+        
+        res.json({
+            success: true,
+            message: 'Order updated with PayPal ID'
+        });
+        
+    } catch (error) {
+        console.error('Error updating order:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to update order'
+        });
+    }
+});
+
+// Update Payment Success Endpoint (simplified - only updates status)
+app.post('/api/orders/:orderId/payment-success', async (req, res) => {
+    try {
+        const { orderId } = req.params;
+        const { paypalPaymentId, paypalCaptureData } = req.body;
+        
+        const order = await Order.findOneAndUpdate(
+            { orderId },
+            { 
+                paymentStatus: 'paid',
+                orderStatus: 'processing',
+                'payment.paypalPaymentId': paypalPaymentId,
+                'payment.transactionId': paypalPaymentId,
+                'dates.paid': new Date(),
+                updatedAt: new Date()
+            },
+            { new: true }
+        );
+        
+        if (!order) {
+            return res.status(404).json({
+                success: false,
+                error: 'Order not found'
+            });
+        }
+        
+        console.log('Order payment completed:', orderId);
+        
+        res.json({
+            success: true,
+            order: {
+                orderId: order.orderId,
+                customerName: `${order.customer.firstName} ${order.customer.lastName}`,
+                amount: order.payment.amount,
+                currency: order.payment.currency,
+                paymentId: paypalPaymentId,
+                status: 'paid'
+            }
+        });
+        
+    } catch (error) {
+        console.error('Error updating payment status:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to update payment status'
+        });
+    }
+});
+
 // [Include all your existing PayPal routes and order routes]
 
 // ===============================
