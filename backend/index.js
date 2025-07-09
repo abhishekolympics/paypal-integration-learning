@@ -5,6 +5,7 @@ const mongoose = require('mongoose');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 require('dotenv').config();
+const emailService = require('./emailService');
 
 const passport = require('passport');
 const OAuth2Strategy = require('passport-google-oauth2').Strategy;
@@ -3939,6 +3940,47 @@ app.post('/api/orders/create', async (req, res) => {
 // Add this to your existing orderSchema (before the model creation)
 
 // Update Payment Failure Endpoint
+// app.post('/api/orders/:orderId/payment-failed', async (req, res) => {
+//     try {
+//         const { orderId } = req.params;
+//         const { reason } = req.body;
+        
+//         const order = await Order.findOneAndUpdate(
+//             { orderId },
+//             { 
+//                 paymentStatus: 'failed',
+//                 orderStatus: 'cancelled',
+//                 notes: `Payment failed: ${reason || 'Unknown reason'}`,
+//                 updatedAt: new Date()
+//             },
+//             { new: true }
+//         );
+        
+//         if (!order) {
+//             return res.status(404).json({
+//                 success: false,
+//                 error: 'Order not found'
+//             });
+//         }
+        
+//         console.log('Order payment failed:', orderId);
+        
+//         // Return original cart data for restoration
+//         res.json({
+//             success: true,
+//             originalCartData: order.originalCartData,
+//             message: 'Payment failed, cart data available for restoration'
+//         });
+        
+//     } catch (error) {
+//         console.error('Error updating payment failure:', error);
+//         res.status(500).json({
+//             success: false,
+//             error: 'Failed to update payment failure status'
+//         });
+//     }
+// });
+
 app.post('/api/orders/:orderId/payment-failed', async (req, res) => {
     try {
         const { orderId } = req.params;
@@ -3964,6 +4006,19 @@ app.post('/api/orders/:orderId/payment-failed', async (req, res) => {
         
         console.log('Order payment failed:', orderId);
         
+        // ✅ SEND FAILURE EMAIL
+        try {
+            const emailResult = await emailService.sendFailureEmail(order);
+            if (emailResult.success) {
+                console.log(`✅ Failure email sent to ${order.customer.email}`);
+            } else {
+                console.error(`❌ Failed to send failure email: ${emailResult.error}`);
+            }
+        } catch (emailError) {
+            console.error('❌ Email sending error:', emailError);
+            // Continue with the response even if email fails
+        }
+        
         // Return original cart data for restoration
         res.json({
             success: true,
@@ -3976,6 +4031,81 @@ app.post('/api/orders/:orderId/payment-failed', async (req, res) => {
         res.status(500).json({
             success: false,
             error: 'Failed to update payment failure status'
+        });
+    }
+});
+
+app.post('/api/orders/:orderId/send-email', async (req, res) => {
+    try {
+        const { orderId } = req.params;
+        const { type } = req.body; // 'success' or 'failure'
+        
+        const order = await Order.findOne({ orderId });
+        
+        if (!order) {
+            return res.status(404).json({
+                success: false,
+                error: 'Order not found'
+            });
+        }
+        
+        let emailResult;
+        if (type === 'success') {
+            emailResult = await emailService.sendSuccessEmail(order);
+        } else if (type === 'failure') {
+            emailResult = await emailService.sendFailureEmail(order);
+        } else {
+            return res.status(400).json({
+                success: false,
+                error: 'Invalid email type. Use "success" or "failure"'
+            });
+        }
+        
+        if (emailResult.success) {
+            res.json({
+                success: true,
+                message: `${type} email sent successfully`,
+                messageId: emailResult.messageId
+            });
+        } else {
+            res.status(500).json({
+                success: false,
+                error: 'Failed to send email',
+                details: emailResult.error
+            });
+        }
+        
+    } catch (error) {
+        console.error('Error sending email:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to send email'
+        });
+    }
+});
+
+app.get('/api/orders/:orderId/preview-email/:type', async (req, res) => {
+    try {
+        const { orderId, type } = req.params;
+        
+        const order = await Order.findOne({ orderId });
+        
+        if (!order) {
+            return res.status(404).json({
+                success: false,
+                error: 'Order not found'
+            });
+        }
+        
+        const htmlContent = emailService.generateReceiptHTML(order, type);
+        res.setHeader('Content-Type', 'text/html');
+        res.send(htmlContent);
+        
+    } catch (error) {
+        console.error('Error generating email preview:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to generate email preview'
         });
     }
 });
@@ -4295,6 +4425,378 @@ app.post('/capture-paypal-order/:paypalOrderId', async (req, res) => {
 });
 
 // FIXED: PayPal payment capture endpoint (the one your frontend calls)
+// app.post('/capture-paypal-payment', async (req, res) => {
+//     try {
+//         const { paypalOrderId } = req.body;
+        
+//         if (!paypalOrderId) {
+//             return res.status(400).json({
+//                 success: false,
+//                 error: 'PayPal order ID is required'
+//             });
+//         }
+
+//         // Find existing order by PayPal order ID
+//         const existingOrder = await Order.findOne({ 'payment.paypalOrderId': paypalOrderId });
+//         if (!existingOrder) {
+//             return res.status(404).json({
+//                 success: false,
+//                 error: 'Order not found for this PayPal transaction'
+//             });
+//         }
+
+//         // Check if already processed
+//         if (existingOrder.paymentStatus === 'paid') {
+//             console.log('Order already processed:', existingOrder.orderId);
+//             return res.json({
+//                 success: true,
+//                 status: 'COMPLETED',
+//                 orderId: existingOrder.orderId,
+//                 paymentId: existingOrder.payment.paypalPaymentId,
+//                 amount: existingOrder.payment.amount,
+//                 currency: existingOrder.payment.currency,
+//                 message: 'Order already processed successfully'
+//             });
+//         }
+
+//         // Capture PayPal payment
+//         const auth = Buffer.from(
+//             `${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET_KEY}`
+//         ).toString('base64');
+
+//         const tokenRes = await axios.post(
+//             'https://api-m.sandbox.paypal.com/v1/oauth2/token',
+//             'grant_type=client_credentials',
+//             {
+//                 headers: {
+//                     'Content-Type': 'application/x-www-form-urlencoded',
+//                     'Authorization': `Basic ${auth}`,
+//                 },
+//             }
+//         );
+
+//         const accessToken = tokenRes.data.access_token;
+
+//         let captureRes;
+//         try {
+//             captureRes = await axios.post(
+//                 `https://api-m.sandbox.paypal.com/v2/checkout/orders/${paypalOrderId}/capture`,
+//                 {},
+//                 {
+//                     headers: {
+//                         'Content-Type': 'application/json',
+//                         'Authorization': `Bearer ${accessToken}`,
+//                     },
+//                 }
+//             );
+//         } catch (captureError) {
+//             if (captureError.response?.data?.details?.[0]?.issue === 'ORDER_ALREADY_CAPTURED') {
+//                 const orderDetailsRes = await axios.get(
+//                     `https://api-m.sandbox.paypal.com/v2/checkout/orders/${paypalOrderId}`,
+//                     {
+//                         headers: {
+//                             'Content-Type': 'application/json',
+//                             'Authorization': `Bearer ${accessToken}`,
+//                         },
+//                     }
+//                 );
+//                 captureRes = { data: orderDetailsRes.data };
+//             } else {
+//                 throw captureError;
+//             }
+//         }
+
+//         if (captureRes.data.status === 'COMPLETED') {
+//             // Extract payment details
+//             let paymentDetails;
+//             let amount;
+            
+//             if (captureRes.data.purchase_units?.[0]?.payments?.captures?.[0]) {
+//                 paymentDetails = captureRes.data.purchase_units[0].payments.captures[0];
+//                 amount = parseFloat(paymentDetails.amount.value);
+//             } else if (captureRes.data.purchase_units?.[0]?.amount?.value) {
+//                 const purchaseUnit = captureRes.data.purchase_units[0];
+//                 amount = parseFloat(purchaseUnit.amount.value);
+//                 paymentDetails = {
+//                     id: paypalOrderId,
+//                     amount: purchaseUnit.amount
+//                 };
+//             } else {
+//                 amount = existingOrder.payment.amount;
+//                 paymentDetails = { id: paypalOrderId, amount: { value: amount, currency_code: 'GBP' } };
+//             }
+            
+//             // Update order status to paid
+//             const updatedOrder = await Order.findOneAndUpdate(
+//                 { orderId: existingOrder.orderId },
+//                 { 
+//                     paymentStatus: 'paid',
+//                     orderStatus: 'processing',
+//                     'payment.paypalPaymentId': paymentDetails.id,
+//                     'payment.transactionId': paymentDetails.id,
+//                     'payment.amount': amount,
+//                     'dates.paid': new Date(),
+//                     notes: `Payment completed successfully via PayPal. Transaction: ${paymentDetails.id}`,
+//                     updatedAt: new Date()
+//                 },
+//                 { new: true }
+//             );
+            
+//             console.log('Order payment completed:', existingOrder.orderId);
+            
+//             return res.json({
+//                 success: true,
+//                 status: 'COMPLETED',
+//                 orderId: updatedOrder.orderId,
+//                 paymentId: paymentDetails.id,
+//                 amount: amount,
+//                 currency: paymentDetails.amount?.currency_code || 'GBP'
+//             });
+            
+//         } else {
+//             return res.status(400).json({
+//                 success: false,
+//                 error: 'Payment not completed',
+//                 status: captureRes.data.status
+//             });
+//         }
+
+//     } catch (err) {
+//         console.error('Error capturing PayPal payment:', err.response ? err.response.data : err.message);
+//         res.status(500).json({ 
+//             success: false,
+//             error: 'Failed to capture payment',
+//             details: err.response ? err.response.data : err.message
+//         });
+//     }
+// });
+
+// REPLACE your existing /capture-paypal-payment endpoint with this updated version
+// app.post('/capture-paypal-payment', async (req, res) => {
+//     try {
+//         const { paypalOrderId } = req.body;
+        
+//         if (!paypalOrderId) {
+//             return res.status(400).json({
+//                 success: false,
+//                 error: 'PayPal order ID is required'
+//             });
+//         }
+
+//         // Find existing order by PayPal order ID
+//         const existingOrder = await Order.findOne({ 'payment.paypalOrderId': paypalOrderId });
+//         if (!existingOrder) {
+//             return res.status(404).json({
+//                 success: false,
+//                 error: 'Order not found for this PayPal transaction'
+//             });
+//         }
+
+//         // Check if already processed
+//         if (existingOrder.paymentStatus === 'paid') {
+//             console.log('Order already processed:', existingOrder.orderId);
+//             return res.json({
+//                 success: true,
+//                 status: 'COMPLETED',
+//                 orderId: existingOrder.orderId,
+//                 paymentId: existingOrder.payment.paypalPaymentId,
+//                 amount: existingOrder.payment.amount,
+//                 currency: existingOrder.payment.currency,
+//                 message: 'Order already processed successfully'
+//             });
+//         }
+
+//         // Capture PayPal payment
+//         const auth = Buffer.from(
+//             `${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET_KEY}`
+//         ).toString('base64');
+
+//         const tokenRes = await axios.post(
+//             'https://api-m.sandbox.paypal.com/v1/oauth2/token',
+//             'grant_type=client_credentials',
+//             {
+//                 headers: {
+//                     'Content-Type': 'application/x-www-form-urlencoded',
+//                     'Authorization': `Basic ${auth}`,
+//                 },
+//             }
+//         );
+
+//         const accessToken = tokenRes.data.access_token;
+
+//         let captureRes;
+//         try {
+//             captureRes = await axios.post(
+//                 `https://api-m.sandbox.paypal.com/v2/checkout/orders/${paypalOrderId}/capture`,
+//                 {},
+//                 {
+//                     headers: {
+//                         'Content-Type': 'application/json',
+//                         'Authorization': `Bearer ${accessToken}`,
+//                     },
+//                 }
+//             );
+//         } catch (captureError) {
+//             // Handle "ORDER_ALREADY_CAPTURED" error
+//             if (captureError.response?.data?.details?.[0]?.issue === 'ORDER_ALREADY_CAPTURED') {
+//                 const orderDetailsRes = await axios.get(
+//                     `https://api-m.sandbox.paypal.com/v2/checkout/orders/${paypalOrderId}`,
+//                     {
+//                         headers: {
+//                             'Content-Type': 'application/json',
+//                             'Authorization': `Bearer ${accessToken}`,
+//                         },
+//                     }
+//                 );
+//                 captureRes = { data: orderDetailsRes.data };
+//             } else {
+//                 // Payment capture failed - send failure email
+//                 console.error('PayPal capture error:', captureError.response?.data || captureError.message);
+                
+//                 // Update order status to failed
+//                 const failedOrder = await Order.findOneAndUpdate(
+//                     { orderId: existingOrder.orderId },
+//                     { 
+//                         paymentStatus: 'failed',
+//                         orderStatus: 'cancelled',
+//                         notes: `Payment capture failed: ${captureError.response?.data?.details?.[0]?.issue || captureError.message}`,
+//                         updatedAt: new Date()
+//                     },
+//                     { new: true }
+//                 );
+                
+//                 // ✅ SEND FAILURE EMAIL
+//                 try {
+//                     const emailResult = await emailService.sendFailureEmail(failedOrder);
+//                     if (emailResult.success) {
+//                         console.log(`✅ Failure email sent to ${failedOrder.customer.email}`);
+//                     } else {
+//                         console.error(`❌ Failed to send failure email: ${emailResult.error}`);
+//                     }
+//                 } catch (emailError) {
+//                     console.error('❌ Email sending error:', emailError);
+//                 }
+                
+//                 throw captureError;
+//             }
+//         }
+
+//         if (captureRes.data.status === 'COMPLETED') {
+//             // Extract payment details
+//             let paymentDetails;
+//             let amount;
+            
+//             if (captureRes.data.purchase_units?.[0]?.payments?.captures?.[0]) {
+//                 paymentDetails = captureRes.data.purchase_units[0].payments.captures[0];
+//                 amount = parseFloat(paymentDetails.amount.value);
+//             } else if (captureRes.data.purchase_units?.[0]?.amount?.value) {
+//                 const purchaseUnit = captureRes.data.purchase_units[0];
+//                 amount = parseFloat(purchaseUnit.amount.value);
+//                 paymentDetails = {
+//                     id: paypalOrderId,
+//                     amount: purchaseUnit.amount
+//                 };
+//             } else {
+//                 amount = existingOrder.payment.amount;
+//                 paymentDetails = { id: paypalOrderId, amount: { value: amount, currency_code: 'GBP' } };
+//             }
+            
+//             // Update order status to paid
+//             const updatedOrder = await Order.findOneAndUpdate(
+//                 { orderId: existingOrder.orderId },
+//                 { 
+//                     paymentStatus: 'paid',
+//                     orderStatus: 'processing',
+//                     'payment.paypalPaymentId': paymentDetails.id,
+//                     'payment.transactionId': paymentDetails.id,
+//                     'payment.amount': amount,
+//                     'dates.paid': new Date(),
+//                     notes: `Payment completed successfully via PayPal. Transaction: ${paymentDetails.id}`,
+//                     updatedAt: new Date()
+//                 },
+//                 { new: true }
+//             );
+            
+//             console.log('Order payment completed:', existingOrder.orderId);
+            
+//             // ✅ SEND SUCCESS EMAIL
+//             try {
+//                 const emailResult = await emailService.sendSuccessEmail(updatedOrder);
+//                 if (emailResult.success) {
+//                     console.log(`✅ Success email sent to ${updatedOrder.customer.email}`);
+//                 } else {
+//                     console.error(`❌ Failed to send success email: ${emailResult.error}`);
+//                 }
+//             } catch (emailError) {
+//                 console.error('❌ Email sending error:', emailError);
+//                 // Don't fail the payment response if email fails
+//             }
+            
+//             return res.json({
+//                 success: true,
+//                 status: 'COMPLETED',
+//                 orderId: updatedOrder.orderId,
+//                 paymentId: paymentDetails.id,
+//                 amount: amount,
+//                 currency: paymentDetails.amount?.currency_code || 'GBP'
+//             });
+            
+//         } else {
+//             // Payment not completed - send failure email
+//             const failedOrder = await Order.findOneAndUpdate(
+//                 { orderId: existingOrder.orderId },
+//                 { 
+//                     paymentStatus: 'failed',
+//                     orderStatus: 'cancelled',
+//                     notes: `Payment not completed. Status: ${captureRes.data.status}`,
+//                     updatedAt: new Date()
+//                 },
+//                 { new: true }
+//             );
+            
+//             // ✅ SEND FAILURE EMAIL
+//             try {
+//                 const emailResult = await emailService.sendFailureEmail(failedOrder);
+//                 if (emailResult.success) {
+//                     console.log(`✅ Failure email sent to ${failedOrder.customer.email}`);
+//                 } else {
+//                     console.error(`❌ Failed to send failure email: ${emailResult.error}`);
+//                 }
+//             } catch (emailError) {
+//                 console.error('❌ Email sending error:', emailError);
+//             }
+            
+//             return res.status(400).json({
+//                 success: false,
+//                 error: 'Payment not completed',
+//                 status: captureRes.data.status
+//             });
+//         }
+
+//     } catch (err) {
+//         console.error('Error capturing PayPal payment:', err.response ? err.response.data : err.message);
+        
+//         // Try to send failure email if we have order information
+//         if (err.orderId) {
+//             try {
+//                 const order = await Order.findOne({ orderId: err.orderId });
+//                 if (order) {
+//                     await emailService.sendFailureEmail(order);
+//                 }
+//             } catch (emailError) {
+//                 console.error('❌ Error sending failure email:', emailError);
+//             }
+//         }
+        
+//         res.status(500).json({ 
+//             success: false,
+//             error: 'Failed to capture payment',
+//             details: err.response ? err.response.data : err.message
+//         });
+//     }
+// });
+
+// REPLACE your existing /capture-paypal-payment endpoint with this enhanced version
 app.post('/capture-paypal-payment', async (req, res) => {
     try {
         const { paypalOrderId } = req.body;
@@ -4360,6 +4862,7 @@ app.post('/capture-paypal-payment', async (req, res) => {
                 }
             );
         } catch (captureError) {
+            // Handle "ORDER_ALREADY_CAPTURED" error
             if (captureError.response?.data?.details?.[0]?.issue === 'ORDER_ALREADY_CAPTURED') {
                 const orderDetailsRes = await axios.get(
                     `https://api-m.sandbox.paypal.com/v2/checkout/orders/${paypalOrderId}`,
@@ -4372,6 +4875,33 @@ app.post('/capture-paypal-payment', async (req, res) => {
                 );
                 captureRes = { data: orderDetailsRes.data };
             } else {
+                // Payment capture failed - send premium failure email
+                console.error('PayPal capture error:', captureError.response?.data || captureError.message);
+                
+                // Update order status to failed
+                const failedOrder = await Order.findOneAndUpdate(
+                    { orderId: existingOrder.orderId },
+                    { 
+                        paymentStatus: 'failed',
+                        orderStatus: 'cancelled',
+                        notes: `Payment capture failed: ${captureError.response?.data?.details?.[0]?.issue || captureError.message}`,
+                        updatedAt: new Date()
+                    },
+                    { new: true }
+                );
+                
+                // ✅ SEND PREMIUM FAILURE EMAIL
+                try {
+                    const emailResult = await emailService.sendFailureEmail(failedOrder);
+                    if (emailResult.success) {
+                        console.log(`✅ Premium failure email sent to ${failedOrder.customer.email}`);
+                    } else {
+                        console.error(`❌ Failed to send premium failure email: ${emailResult.error}`);
+                    }
+                } catch (emailError) {
+                    console.error('❌ Email sending error:', emailError);
+                }
+                
                 throw captureError;
             }
         }
@@ -4414,16 +4944,54 @@ app.post('/capture-paypal-payment', async (req, res) => {
             
             console.log('Order payment completed:', existingOrder.orderId);
             
+            // ✅ SEND PREMIUM SUCCESS EMAIL WITH MULTI-PAGE INVOICE
+            try {
+                const emailResult = await emailService.sendSuccessEmail(updatedOrder);
+                if (emailResult.success) {
+                    console.log(`✅ Premium success email with multi-page invoice sent to ${updatedOrder.customer.email}`);
+                } else {
+                    console.error(`❌ Failed to send premium success email: ${emailResult.error}`);
+                }
+            } catch (emailError) {
+                console.error('❌ Premium email sending error:', emailError);
+                // Don't fail the payment response if email fails
+            }
+            
             return res.json({
                 success: true,
                 status: 'COMPLETED',
                 orderId: updatedOrder.orderId,
                 paymentId: paymentDetails.id,
                 amount: amount,
-                currency: paymentDetails.amount?.currency_code || 'GBP'
+                currency: paymentDetails.amount?.currency_code || 'GBP',
+                message: 'Payment completed and premium invoice sent'
             });
             
         } else {
+            // Payment not completed - send premium failure email
+            const failedOrder = await Order.findOneAndUpdate(
+                { orderId: existingOrder.orderId },
+                { 
+                    paymentStatus: 'failed',
+                    orderStatus: 'cancelled',
+                    notes: `Payment not completed. Status: ${captureRes.data.status}`,
+                    updatedAt: new Date()
+                },
+                { new: true }
+            );
+            
+            // ✅ SEND PREMIUM FAILURE EMAIL
+            try {
+                const emailResult = await emailService.sendFailureEmail(failedOrder);
+                if (emailResult.success) {
+                    console.log(`✅ Premium failure email sent to ${failedOrder.customer.email}`);
+                } else {
+                    console.error(`❌ Failed to send premium failure email: ${emailResult.error}`);
+                }
+            } catch (emailError) {
+                console.error('❌ Email sending error:', emailError);
+            }
+            
             return res.status(400).json({
                 success: false,
                 error: 'Payment not completed',
@@ -4433,6 +5001,19 @@ app.post('/capture-paypal-payment', async (req, res) => {
 
     } catch (err) {
         console.error('Error capturing PayPal payment:', err.response ? err.response.data : err.message);
+        
+        // Try to send premium failure email if we have order information
+        if (err.orderId) {
+            try {
+                const order = await Order.findOne({ orderId: err.orderId });
+                if (order) {
+                    await emailService.sendFailureEmail(order);
+                }
+            } catch (emailError) {
+                console.error('❌ Error sending premium failure email:', emailError);
+            }
+        }
+        
         res.status(500).json({ 
             success: false,
             error: 'Failed to capture payment',
@@ -4480,6 +5061,54 @@ app.patch('/api/orders/:orderId/paypal', async (req, res) => {
 });
 
 // Update Payment Success Endpoint (simplified - only updates status)
+// app.post('/api/orders/:orderId/payment-success', async (req, res) => {
+//     try {
+//         const { orderId } = req.params;
+//         const { paypalPaymentId, paypalCaptureData } = req.body;
+        
+//         const order = await Order.findOneAndUpdate(
+//             { orderId },
+//             { 
+//                 paymentStatus: 'paid',
+//                 orderStatus: 'processing',
+//                 'payment.paypalPaymentId': paypalPaymentId,
+//                 'payment.transactionId': paypalPaymentId,
+//                 'dates.paid': new Date(),
+//                 updatedAt: new Date()
+//             },
+//             { new: true }
+//         );
+        
+//         if (!order) {
+//             return res.status(404).json({
+//                 success: false,
+//                 error: 'Order not found'
+//             });
+//         }
+        
+//         console.log('Order payment completed:', orderId);
+        
+//         res.json({
+//             success: true,
+//             order: {
+//                 orderId: order.orderId,
+//                 customerName: `${order.customer.firstName} ${order.customer.lastName}`,
+//                 amount: order.payment.amount,
+//                 currency: order.payment.currency,
+//                 paymentId: paypalPaymentId,
+//                 status: 'paid'
+//             }
+//         });
+        
+//     } catch (error) {
+//         console.error('Error updating payment status:', error);
+//         res.status(500).json({
+//             success: false,
+//             error: 'Failed to update payment status'
+//         });
+//     }
+// });
+
 app.post('/api/orders/:orderId/payment-success', async (req, res) => {
     try {
         const { orderId } = req.params;
@@ -4507,23 +5136,51 @@ app.post('/api/orders/:orderId/payment-success', async (req, res) => {
         
         console.log('Order payment completed:', orderId);
         
+        // ✅ SEND SUCCESS EMAIL
+        try {
+            const emailResult = await emailService.sendSuccessEmail(order);
+            if (emailResult.success) {
+                console.log(`✅ Success email sent to ${order.customer.email}`);
+            } else {
+                console.error(`❌ Failed to send success email: ${emailResult.error}`);
+            }
+        } catch (emailError) {
+            console.error('❌ Email sending error:', emailError);
+            // Don't fail the payment if email fails
+        }
+        
         res.json({
             success: true,
             order: {
                 orderId: order.orderId,
                 customerName: `${order.customer.firstName} ${order.customer.lastName}`,
-                amount: order.payment.amount,
-                currency: order.payment.currency,
-                paymentId: paypalPaymentId,
-                status: 'paid'
+                customerEmail: order.customer.email,
+                amount: order.pricing.total,
+                currency: order.payment.currency || 'GBP',
+                paymentStatus: order.paymentStatus,
+                orderStatus: order.orderStatus,
+                transactionId: order.payment.transactionId
             }
         });
         
     } catch (error) {
-        console.error('Error updating payment status:', error);
+        console.error('Error updating payment success:', error);
         res.status(500).json({
             success: false,
-            error: 'Failed to update payment status'
+            error: 'Failed to update payment success status'
+        });
+    }
+});
+
+app.get('/api/test-email', async (req, res) => {
+    try {
+        const result = await emailService.testEmailConfig();
+        res.json(result);
+    } catch (error) {
+        res.status(500).json({ 
+            success: false, 
+            error: 'Email test failed',
+            details: error.message 
         });
     }
 });
@@ -5044,10 +5701,438 @@ const cleanupPendingOrders = async () => {
 // Run cleanup every 15 minutes
 setInterval(cleanupPendingOrders, 15 * 60 * 1000);
 
+// Test PDF generation endpoint
+app.get('/api/test-pdf/:orderId', async (req, res) => {
+    try {
+        const { orderId } = req.params;
+        const order = await Order.findOne({ orderId });
+        
+        if (!order) {
+            return res.status(404).json({ error: 'Order not found' });
+        }
+        
+        // Generate HTML content
+        const htmlContent = emailService.generateReceiptHTML(order, 'success');
+        
+        // Generate PDF
+        const pdfBuffer = await emailService.generatePDFFromHTML(htmlContent);
+        
+        // Send PDF directly to browser
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', 'inline; filename="test-receipt.pdf"');
+        res.send(pdfBuffer);
+        
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
 
+// Add this test endpoint to your index.js
+app.get('/api/test-new-pdf', async (req, res) => {
+    try {
+        // FORCE reload the emailService module
+        delete require.cache[require.resolve('./emailService')];
+        const emailService = require('./emailService');
+        
+        // Create a mock order
+        const mockOrder = {
+            orderId: 'NEW_TEST_123',
+            customer: {
+                firstName: 'Test',
+                lastName: 'Customer', 
+                email: 'test@example.com',
+                phone: '1234567890',
+                address: '123 Test Street',
+                city: 'Test City',
+                postcode: 'T1 2ST',
+                country: 'GB'
+            },
+            orderStatus: 'processing',
+            paymentStatus: 'paid',
+            items: [{
+                name: 'Test Number Plate',
+                type: 'plate',
+                price: 25.99,
+                quantity: 2,
+                subtotal: 51.98,
+                plateConfiguration: {
+                    text: 'TEST123',
+                    size: { label: 'Standard Size' },
+                    plateStyle: { label: 'Standard Plate' },
+                    fontColor: { name: 'Black' },
+                    roadLegal: 'No'
+                }
+            }],
+            pricing: {
+                subtotal: 51.98,
+                discount: 0,
+                shipping: 0,
+                tax: 9.36,
+                taxRate: 0.18,
+                total: 61.34
+            },
+            payment: {
+                transactionId: 'NEW_TEST_TRANSACTION_123',
+                provider: 'paypal',
+                currency: 'GBP'
+            },
+            dates: {
+                ordered: new Date(),
+                paid: new Date()
+            }
+        };
+        
+        // Generate HTML with NEW template
+        const htmlContent = emailService.generateReceiptHTML(mockOrder, 'success');
+        
+        // Generate PDF
+        const pdfBuffer = await emailService.generatePDFFromHTML(htmlContent);
+        
+        // Send PDF
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', 'inline; filename="new-test-receipt.pdf"');
+        res.send(pdfBuffer);
+        
+    } catch (error) {
+        console.error('PDF generation error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
 
+// Test endpoint using the NEW professional template
+app.get('/api/test-professional-pdf', async (req, res) => {
+    try {
+        // Use the NEW file
+        const professionalEmailService = require('./emailService-professional');
+        
+        const mockOrder = {
+            orderId: 'PROFESSIONAL_TEST_456',
+            customer: {
+                firstName: 'John',
+                lastName: 'Doe',
+                email: 'john@example.com',
+                phone: '1234567890',
+                address: '123 Professional Street',
+                city: 'London',
+                postcode: 'SW1A 1AA',
+                country: 'GB'
+            },
+            orderStatus: 'processing',
+            paymentStatus: 'paid',
+            items: [{
+                name: 'Premium Number Plate',
+                type: 'plate',
+                price: 29.99,
+                quantity: 1,
+                subtotal: 29.99,
+                plateConfiguration: {
+                    text: 'PROF123',
+                    size: { label: 'Standard Size' },
+                    plateStyle: { label: 'Premium Plate' },
+                    fontColor: { name: 'Black' },
+                    roadLegal: 'Yes'
+                }
+            }],
+            pricing: {
+                subtotal: 29.99,
+                discount: 0,
+                shipping: 0,
+                tax: 5.40,
+                taxRate: 0.18,
+                total: 35.39
+            },
+            payment: {
+                transactionId: 'PROF_TRANSACTION_456',
+                provider: 'paypal',
+                currency: 'GBP'
+            },
+            dates: {
+                ordered: new Date(),
+                paid: new Date()
+            }
+        };
+        
+        // Generate HTML with PROFESSIONAL template
+        const htmlContent = professionalEmailService.generateReceiptHTML(mockOrder, 'success');
+        
+        // Generate PDF
+        const pdfBuffer = await professionalEmailService.generatePDFFromHTML(htmlContent);
+        
+        // Send PDF
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', 'inline; filename="professional-receipt.pdf"');
+        res.send(pdfBuffer);
+        
+    } catch (error) {
+        console.error('Professional PDF generation error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
 
+// ADD these test endpoints to your server.js
 
+// Test premium email configuration
+app.get('/api/test-premium-email', async (req, res) => {
+    try {
+        const result = await emailService.testEmailConfig();
+        res.json(result);
+    } catch (error) {
+        res.status(500).json({ 
+            success: false, 
+            error: 'Premium email test failed',
+            details: error.message 
+        });
+    }
+});
+
+// Test premium PDF generation with real order
+app.get('/api/test-premium-pdf/:orderId', async (req, res) => {
+    try {
+        const { orderId } = req.params;
+        const order = await Order.findOne({ orderId });
+        
+        if (!order) {
+            return res.status(404).json({ error: 'Order not found' });
+        }
+        
+        // Generate premium HTML content
+        const htmlContent = emailService.generateReceiptHTML(order, 'success');
+        
+        // Generate premium PDF
+        const pdfBuffer = await emailService.generatePDFFromHTML(htmlContent);
+        
+        // Send PDF directly to browser
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', 'inline; filename="premium-test-receipt.pdf"');
+        res.send(pdfBuffer);
+        
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Test premium email sending with real order
+app.post('/api/test-premium-email/:orderId/:type', async (req, res) => {
+    try {
+        const { orderId, type } = req.params; // type: 'success' or 'failure'
+        
+        const order = await Order.findOne({ orderId });
+        if (!order) {
+            return res.status(404).json({
+                success: false,
+                error: 'Order not found'
+            });
+        }
+        
+        let emailResult;
+        if (type === 'success') {
+            emailResult = await emailService.sendSuccessEmail(order);
+        } else if (type === 'failure') {
+            emailResult = await emailService.sendFailureEmail(order);
+        } else {
+            return res.status(400).json({
+                success: false,
+                error: 'Invalid email type. Use "success" or "failure"'
+            });
+        }
+        
+        if (emailResult.success) {
+            res.json({
+                success: true,
+                message: `Premium ${type} email sent successfully`,
+                messageId: emailResult.messageId
+            });
+        } else {
+            res.status(500).json({
+                success: false,
+                error: 'Failed to send premium email',
+                details: emailResult.error
+            });
+        }
+        
+    } catch (error) {
+        console.error('Error sending premium email:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to send premium email'
+        });
+    }
+});
+
+// Preview premium email HTML (for testing design)
+app.get('/api/preview-premium-email/:orderId/:type', async (req, res) => {
+    try {
+        const { orderId, type } = req.params;
+        
+        const order = await Order.findOne({ orderId });
+        if (!order) {
+            return res.status(404).json({
+                success: false,
+                error: 'Order not found'
+            });
+        }
+        
+        const htmlContent = emailService.generateReceiptHTML(order, type);
+        res.setHeader('Content-Type', 'text/html');
+        res.send(htmlContent);
+        
+    } catch (error) {
+        console.error('Error generating premium email preview:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to generate premium email preview'
+        });
+    }
+});
+
+// Test with mock premium order data
+app.get('/api/test-premium-mock', async (req, res) => {
+    try {
+        // Create mock order with premium data
+        const mockOrder = {
+            orderId: 'PREMIUM_TEST_' + Date.now(),
+            customer: {
+                firstName: 'John',
+                lastName: 'Doe',
+                email: 'john.doe@example.com',
+                phone: '+44 7700 900123',
+                address: '123 Premium Street',
+                city: 'London',
+                postcode: 'SW1A 1AA',
+                country: 'United Kingdom'
+            },
+            orderStatus: 'processing',
+            paymentStatus: 'paid',
+            items: [
+                {
+                    name: 'Premium Number Plate',
+                    type: 'plate',
+                    price: 29.99,
+                    quantity: 1,
+                    subtotal: 29.99,
+                    plateConfiguration: {
+                        text: 'PREMIUM',
+                        spacing: 'legal',
+                        displayText: 'PREMIUM',
+                        side: 'front',
+                        size: {
+                            key: 'standard',
+                            label: 'Standard UK Size',
+                            dimensions: '520mm x 111mm'
+                        },
+                        plateStyle: {
+                            key: 'premium',
+                            label: 'Premium Acrylic',
+                            font: 'Charles Wright',
+                            fontSize: 79,
+                            price: 5.00
+                        },
+                        fontColor: {
+                            key: 'black',
+                            name: 'Black',
+                            color: '#000000',
+                            price: 0
+                        },
+                        border: {
+                            key: 'black',
+                            name: 'Black Border',
+                            type: 'solid',
+                            color: '#000000',
+                            borderWidth: 2,
+                            price: 3.00
+                        },
+                        finish: {
+                            key: 'gloss',
+                            label: 'Gloss Finish',
+                            description: 'High-quality gloss acrylic finish',
+                            price: 2.00
+                        },
+                        roadLegal: 'Yes'
+                    }
+                },
+                {
+                    name: 'Show Plate',
+                    type: 'plate',
+                    price: 24.99,
+                    quantity: 1,
+                    subtotal: 24.99,
+                    plateConfiguration: {
+                        text: 'SHOW',
+                        spacing: 'custom',
+                        displayText: 'S H O W',
+                        side: 'rear',
+                        size: {
+                            key: 'standard',
+                            label: 'Standard UK Size',
+                            dimensions: '520mm x 111mm'
+                        },
+                        plateStyle: {
+                            key: 'carbon',
+                            label: 'Carbon Fiber Effect',
+                            font: 'Custom Font',
+                            fontSize: 85,
+                            price: 10.00
+                        },
+                        fontColor: {
+                            key: 'silver',
+                            name: 'Silver',
+                            color: '#C0C0C0',
+                            price: 2.00
+                        },
+                        border: {
+                            key: 'none',
+                            name: 'No Border',
+                            type: 'none',
+                            color: '',
+                            borderWidth: 0,
+                            price: 0
+                        },
+                        finish: {
+                            key: 'matt',
+                            label: 'Matt Black',
+                            description: 'Premium matt black finish',
+                            price: 5.00
+                        },
+                        roadLegal: 'No'
+                    }
+                }
+            ],
+            pricing: {
+                subtotal: 54.98,
+                discount: 5.00,
+                discountCode: 'WELCOME10',
+                shipping: 0,
+                tax: 9.00,
+                taxRate: 0.20,
+                total: 58.98
+            },
+            payment: {
+                provider: 'paypal',
+                transactionId: 'PREMIUM_TEST_TRANSACTION_' + Date.now(),
+                amount: 58.98,
+                currency: 'GBP'
+            },
+            dates: {
+                ordered: new Date(),
+                paid: new Date()
+            },
+            notes: 'Premium test order with multiple plates and configurations'
+        };
+        
+        // Generate premium PDF
+        const htmlContent = emailService.generateReceiptHTML(mockOrder, 'success');
+        const pdfBuffer = await emailService.generatePDFFromHTML(htmlContent);
+        
+        // Send PDF
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', 'inline; filename="premium-mock-receipt.pdf"');
+        res.send(pdfBuffer);
+        
+    } catch (error) {
+        console.error('Premium mock test error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
 
 app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);
