@@ -50,7 +50,7 @@ const generatePDFFromHTML = async (htmlContent, filename) => {
     }
 };
 
-// Transform order data with SMART CONSOLIDATION
+// FIXED: Transform order data with PROPER item consolidation and fixing kit handling
 const transformOrderData = (order) => {
     const baseData = {
         orderId: order.orderId,
@@ -88,73 +88,114 @@ const transformOrderData = (order) => {
         notes: order.notes || ''
     };
 
-    // SMART ITEM CONSOLIDATION
-    const rawItems = (order.items || []).map(item => ({
-        name: item.name || 'Number Plate',
-        type: item.type || 'plate',
-        price: item.price || 0,
-        quantity: item.quantity || 1,
-        subtotal: item.subtotal || 0,
-        plateConfiguration: {
-            text: item.plateConfiguration?.text || item.registration || 'UNKNOWN',
-            spacing: item.plateConfiguration?.spacing || 'legal',
-            side: item.plateConfiguration?.side || 'front',
-            size: {
-                label: item.plateConfiguration?.size?.label || 'Standard Size'
-            },
-            plateStyle: {
-                label: item.plateConfiguration?.plateStyle?.label || 'Standard Plate'
-            },
-            fontColor: {
-                name: item.plateConfiguration?.fontColor?.name || 'Black'
-            },
-            border: {
-                name: item.plateConfiguration?.border?.name || 'No Border'
-            },
-            finish: {
-                label: item.plateConfiguration?.finish?.label || 'Standard Finish'
-            },
-            roadLegal: item.plateConfiguration?.roadLegal || 'No'
+    // FIXED: Process items correctly
+    const rawItems = (order.items || []).map(item => {
+        // FIXED: Handle fixing kit items differently
+        if (item.type === 'fixing-kit') {
+            return {
+                name: item.name || 'Fixing Kit',
+                type: 'fixing-kit',
+                price: item.price || 0,
+                quantity: item.quantity || 1,
+                subtotal: item.subtotal || 0,
+                kitConfiguration: {
+                    contents: 'Sticky Pads & Screws',
+                    compatibility: 'Universal fit for all plate sizes',
+                    installation: 'Easy DIY installation',
+                    warranty: '12 months'
+                }
+            };
+        } else {
+            // Handle plate items
+            return {
+                name: item.name || 'Number Plate',
+                type: item.type || 'plate',
+                price: item.price || 0,
+                quantity: item.quantity || 1,
+                subtotal: item.subtotal || 0,
+                plateConfiguration: {
+                    text: item.plateConfiguration?.text || item.registration || 'UNKNOWN',
+                    spacing: item.plateConfiguration?.spacing || 'legal',
+                    side: item.plateConfiguration?.side || 'front',
+                    size: {
+                        label: item.plateConfiguration?.size?.label || 'Standard Size'
+                    },
+                    plateStyle: {
+                        label: item.plateConfiguration?.plateStyle?.label || 'Standard Plate'
+                    },
+                    fontColor: {
+                        name: item.plateConfiguration?.fontColor?.name || 'Black'
+                    },
+                    border: {
+                        name: item.plateConfiguration?.border?.name || 'No Border'
+                    },
+                    finish: {
+                        label: item.plateConfiguration?.finish?.label || 'Standard Finish'
+                    },
+                    roadLegal: item.plateConfiguration?.roadLegal || 'No'
+                }
+            };
         }
-    }));
+    });
 
-    // GROUP IDENTICAL ITEMS
+    // FIXED: Group ONLY plates with same text and side, keep fixing kits separate
     const groupedItems = {};
     
     rawItems.forEach(item => {
-        // Create unique key for grouping (everything except quantity and price)
-        const groupKey = JSON.stringify({
-            name: item.name,
-            type: item.type,
-            plateConfiguration: item.plateConfiguration
-        });
-        
-        if (groupedItems[groupKey]) {
-            // Combine quantities and prices
-            groupedItems[groupKey].quantity += item.quantity;
-            groupedItems[groupKey].subtotal += item.subtotal;
+        if (item.type === 'fixing-kit') {
+            // Don't group fixing kits, each one is unique
+            const uniqueKey = `fixing-kit-${Date.now()}-${Math.random()}`;
+            groupedItems[uniqueKey] = { ...item };
         } else {
-            // First occurrence of this item
-            groupedItems[groupKey] = { ...item };
+            // Group plates only by text, side, and style (not name)
+            const groupKey = JSON.stringify({
+                type: item.type,
+                text: item.plateConfiguration.text,
+                side: item.plateConfiguration.side,
+                style: item.plateConfiguration.plateStyle.label
+            });
+            
+            if (groupedItems[groupKey]) {
+                // Combine quantities and prices
+                groupedItems[groupKey].quantity += item.quantity;
+                groupedItems[groupKey].subtotal += item.subtotal;
+            } else {
+                // First occurrence of this item
+                groupedItems[groupKey] = { ...item };
+            }
         }
     });
 
-    // Convert back to array and sort (front plates first, then rear, then others)
+    // Convert back to array and sort properly
     const consolidatedItems = Object.values(groupedItems).sort((a, b) => {
-        const sideOrder = { 'front': 0, 'rear': 1, 'both': 2 };
-        const sideA = sideOrder[a.plateConfiguration?.side] || 3;
-        const sideB = sideOrder[b.plateConfiguration?.side] || 3;
-        
-        if (sideA !== sideB) return sideA - sideB;
-        
-        // If same side, sort by type (plates before fixing kits)
+        // First, separate plates from fixing kits
         if (a.type !== b.type) {
-            return a.type === 'plate' ? -1 : 1;
+            return a.type === 'plate' ? -1 : 1; // Plates first, then fixing kits
         }
         
-        // If same type, sort by name
+        // For plates, sort by side (front first, then rear)
+        if (a.type === 'plate' && b.type === 'plate') {
+            const sideOrder = { 'FRONT': 0, 'front': 0, 'REAR': 1, 'rear': 1, 'both': 2 };
+            const sideA = sideOrder[a.plateConfiguration?.side] || 3;
+            const sideB = sideOrder[b.plateConfiguration?.side] || 3;
+            
+            if (sideA !== sideB) return sideA - sideB;
+            
+            // If same side, sort by text
+            return (a.plateConfiguration?.text || '').localeCompare(b.plateConfiguration?.text || '');
+        }
+        
+        // For fixing kits, sort by name
         return a.name.localeCompare(b.name);
     });
+
+    console.log('🔍 Transformed Items:', consolidatedItems.map(item => ({
+        name: item.name,
+        type: item.type,
+        side: item.plateConfiguration?.side || 'N/A',
+        text: item.plateConfiguration?.text || item.kitConfiguration?.contents || 'N/A',
+        quantity: item.quantity
+    })));
 
     return {
         ...baseData,
@@ -162,7 +203,7 @@ const transformOrderData = (order) => {
     };
 };
 
-// Generate FINAL Premium Invoice HTML
+// FIXED: Generate Premium Invoice HTML with proper fixing kit handling
 const generateReceiptHTML = (order, status = 'success') => {
     const isSuccess = status === 'success';
     const transformedOrder = transformOrderData(order);
@@ -240,7 +281,7 @@ const generateReceiptHTML = (order, status = 'success') => {
                 height: 100%;
                 display: flex;
                 flex-direction: column;
-                padding: 30px; /* REDUCED from 60px */
+                padding: 30px;
                 min-height: calc(297mm - 60px);
             }
             
@@ -248,8 +289,8 @@ const generateReceiptHTML = (order, status = 'success') => {
             .main-header {
                 background: linear-gradient(135deg, #1e293b 0%, #334155 50%, #475569 100%);
                 color: white;
-                padding: 25px 40px; /* REDUCED from 50px 60px */
-                margin: -30px -30px 30px -30px; /* REDUCED margins */
+                padding: 25px 40px;
+                margin: -30px -30px 30px -30px;
                 position: relative;
                 overflow: hidden;
             }
@@ -259,7 +300,7 @@ const generateReceiptHTML = (order, status = 'success') => {
                 position: absolute;
                 top: -50%;
                 right: -20%;
-                width: 300px; /* REDUCED from 400px */
+                width: 300px;
                 height: 300px;
                 background: radial-gradient(circle, rgba(255,255,255,0.1) 0%, transparent 70%);
                 border-radius: 50%;
@@ -271,7 +312,7 @@ const generateReceiptHTML = (order, status = 'success') => {
                 bottom: 0;
                 left: 0;
                 width: 100%;
-                height: 4px; /* REDUCED from 6px */
+                height: 4px;
                 background: linear-gradient(90deg, #3b82f6 0%, #1d4ed8 50%, #3b82f6 100%);
             }
             
@@ -289,10 +330,10 @@ const generateReceiptHTML = (order, status = 'success') => {
             }
             
             .company-logo {
-                font-size: 32px; /* REDUCED from 48px */
+                font-size: 32px;
                 font-weight: 900;
                 letter-spacing: -2px;
-                margin-bottom: 8px; /* REDUCED from 12px */
+                margin-bottom: 8px;
                 background: linear-gradient(135deg, #ffffff 0%, #e2e8f0 100%);
                 -webkit-background-clip: text;
                 -webkit-text-fill-color: transparent;
@@ -301,7 +342,7 @@ const generateReceiptHTML = (order, status = 'success') => {
             }
             
             .company-tagline {
-                font-size: 12px; /* REDUCED from 16px */
+                font-size: 12px;
                 opacity: 0.9;
                 font-weight: 300;
                 letter-spacing: 1.5px;
@@ -314,15 +355,15 @@ const generateReceiptHTML = (order, status = 'success') => {
             }
             
             .invoice-type-section h1 {
-                font-size: 24px; /* REDUCED from 32px */
+                font-size: 24px;
                 font-weight: 700;
-                margin-bottom: 8px; /* REDUCED from 12px */
+                margin-bottom: 8px;
                 text-shadow: 0 2px 4px rgba(0,0,0,0.3);
                 letter-spacing: -1px;
             }
             
             .invoice-subtitle {
-                font-size: 12px; /* REDUCED from 14px */
+                font-size: 12px;
                 opacity: 0.8;
                 font-weight: 300;
                 letter-spacing: 1px;
@@ -332,7 +373,7 @@ const generateReceiptHTML = (order, status = 'success') => {
             .continuation-header {
                 background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
                 border-bottom: 3px solid #3b82f6;
-                padding: 15px 30px; /* REDUCED */
+                padding: 15px 30px;
                 margin: -30px -30px 20px -30px;
                 display: flex;
                 justify-content: space-between;
@@ -347,7 +388,7 @@ const generateReceiptHTML = (order, status = 'success') => {
             }
             
             .continuation-logo {
-                font-size: 20px; /* REDUCED */
+                font-size: 20px;
                 font-weight: 900;
                 color: #1e293b;
                 letter-spacing: -1px;
@@ -392,9 +433,9 @@ const generateReceiptHTML = (order, status = 'success') => {
             .order-info-section {
                 background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%);
                 border: 2px solid #0ea5e9;
-                border-radius: 15px; /* REDUCED from 20px */
-                padding: 25px; /* REDUCED from 40px */
-                margin-bottom: 30px; /* REDUCED from 50px */
+                border-radius: 15px;
+                padding: 25px;
+                margin-bottom: 30px;
                 box-shadow: 0 8px 20px rgba(14, 165, 233, 0.15);
             }
             
@@ -402,9 +443,9 @@ const generateReceiptHTML = (order, status = 'success') => {
                 display: flex;
                 justify-content: space-between;
                 align-items: center;
-                padding: 12px 0; /* REDUCED from 15px */
+                padding: 12px 0;
                 border-bottom: 1px solid rgba(14, 165, 233, 0.2);
-                margin-bottom: 12px; /* REDUCED from 15px */
+                margin-bottom: 12px;
             }
             
             .info-row:last-child {
@@ -413,7 +454,7 @@ const generateReceiptHTML = (order, status = 'success') => {
             }
             
             .info-label {
-                font-size: 11px; /* REDUCED from 12px */
+                font-size: 11px;
                 color: #0c4a6e;
                 text-transform: uppercase;
                 letter-spacing: 1.5px;
@@ -422,7 +463,7 @@ const generateReceiptHTML = (order, status = 'success') => {
             }
             
             .info-value {
-                font-size: 14px; /* REDUCED from 16px */
+                font-size: 14px;
                 font-weight: 800;
                 color: #1e293b;
                 flex: 1;
@@ -432,11 +473,11 @@ const generateReceiptHTML = (order, status = 'success') => {
             
             .order-id {
                 font-family: 'SF Mono', 'Monaco', 'Courier New', monospace;
-                font-size: 12px; /* REDUCED from 14px */
+                font-size: 12px;
                 background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
                 color: white;
-                padding: 6px 12px; /* REDUCED from 8px 16px */
-                border-radius: 8px; /* REDUCED from 10px */
+                padding: 6px 12px;
+                border-radius: 8px;
                 font-weight: 700;
                 letter-spacing: 1px;
                 box-shadow: 0 4px 10px rgba(59, 130, 246, 0.3);
@@ -447,9 +488,9 @@ const generateReceiptHTML = (order, status = 'success') => {
                 color: #059669;
                 font-weight: 800;
                 background: linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%);
-                padding: 4px 12px; /* REDUCED from 6px 16px */
-                border-radius: 20px; /* REDUCED from 25px */
-                font-size: 11px; /* REDUCED from 13px */
+                padding: 4px 12px;
+                border-radius: 20px;
+                font-size: 11px;
                 text-transform: uppercase;
                 letter-spacing: 0.5px;
                 border: 2px solid #059669;
@@ -470,35 +511,35 @@ const generateReceiptHTML = (order, status = 'success') => {
             .amount-highlight {
                 color: #059669;
                 font-weight: 900;
-                font-size: 18px; /* REDUCED from 20px */
+                font-size: 18px;
                 text-shadow: 0 2px 4px rgba(5, 150, 105, 0.2);
             }
             
             /* CONTENT SECTIONS */
             .content-section {
-                margin: 30px 0; /* REDUCED from 50px */
+                margin: 30px 0;
                 position: relative;
                 flex: 1;
             }
             
             .section-header {
-                font-size: 16px; /* REDUCED from 20px */
+                font-size: 16px;
                 font-weight: 800;
                 color: #1e293b;
-                margin-bottom: 20px; /* REDUCED from 35px */
+                margin-bottom: 20px;
                 text-transform: uppercase;
                 letter-spacing: 2px;
                 position: relative;
-                padding-bottom: 10px; /* REDUCED from 15px */
+                padding-bottom: 10px;
                 display: flex;
                 align-items: center;
-                gap: 12px; /* REDUCED from 15px */
+                gap: 12px;
             }
             
             .section-header::before {
                 content: '';
-                width: 4px; /* REDUCED from 6px */
-                height: 20px; /* REDUCED from 30px */
+                width: 4px;
+                height: 20px;
                 background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
                 border-radius: 2px;
                 flex-shrink: 0;
@@ -507,7 +548,7 @@ const generateReceiptHTML = (order, status = 'success') => {
             .section-header::after {
                 content: '';
                 flex: 1;
-                height: 2px; /* REDUCED from 3px */
+                height: 2px;
                 background: linear-gradient(90deg, #3b82f6 0%, transparent 100%);
                 border-radius: 1px;
             }
@@ -515,9 +556,9 @@ const generateReceiptHTML = (order, status = 'success') => {
             /* COMPACT SHIPPING SECTION */
             .shipping-section {
                 background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);
-                border: 2px solid #e2e8f0; /* REDUCED from 3px */
-                border-radius: 15px; /* REDUCED from 20px */
-                padding: 25px; /* REDUCED from 40px */
+                border: 2px solid #e2e8f0;
+                border-radius: 15px;
+                padding: 25px;
                 position: relative;
                 box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08);
                 overflow: hidden;
@@ -529,54 +570,54 @@ const generateReceiptHTML = (order, status = 'success') => {
                 top: 0;
                 left: 0;
                 width: 100%;
-                height: 4px; /* REDUCED from 6px */
+                height: 4px;
                 background: linear-gradient(90deg, #3b82f6 0%, #1d4ed8 100%);
             }
             
             .shipping-title {
-                font-size: 14px; /* REDUCED from 18px */
+                font-size: 14px;
                 font-weight: 700;
                 color: #1e293b;
-                margin-bottom: 20px; /* REDUCED from 25px */
+                margin-bottom: 20px;
                 text-transform: uppercase;
                 letter-spacing: 1px;
                 display: flex;
                 align-items: center;
-                gap: 10px; /* REDUCED from 12px */
+                gap: 10px;
             }
             
             .shipping-icon {
-                width: 32px; /* REDUCED from 40px */
+                width: 32px;
                 height: 32px;
                 background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
-                border-radius: 8px; /* REDUCED from 10px */
+                border-radius: 8px;
                 display: flex;
                 align-items: center;
                 justify-content: center;
-                font-size: 16px; /* REDUCED from 18px */
+                font-size: 16px;
                 color: white;
                 box-shadow: 0 4px 10px rgba(59, 130, 246, 0.3);
             }
             
             .customer-name {
                 font-weight: 800;
-                font-size: 18px; /* REDUCED from 20px */
+                font-size: 18px;
                 color: #1e293b;
-                margin-bottom: 15px; /* REDUCED from 20px */
+                margin-bottom: 15px;
                 line-height: 1.3;
                 letter-spacing: -0.5px;
             }
             
             .address-details {
-                margin-bottom: 15px; /* REDUCED from 20px */
+                margin-bottom: 15px;
             }
             
             .address-line {
                 color: #475569;
-                margin-bottom: 6px; /* REDUCED from 8px */
+                margin-bottom: 6px;
                 line-height: 1.5;
-                font-size: 14px; /* REDUCED from 15px */
-                padding-left: 15px; /* REDUCED from 20px */
+                font-size: 14px;
+                padding-left: 15px;
                 position: relative;
                 word-wrap: break-word;
                 overflow-wrap: break-word;
@@ -593,34 +634,34 @@ const generateReceiptHTML = (order, status = 'success') => {
             .contact-grid {
                 display: grid;
                 grid-template-columns: 1fr 1fr;
-                gap: 12px; /* REDUCED from 15px */
-                margin-top: 15px; /* REDUCED from 20px */
-                padding-top: 15px; /* REDUCED from 20px */
+                gap: 12px;
+                margin-top: 15px;
+                padding-top: 15px;
                 border-top: 2px solid #f1f5f9;
             }
             
             .contact-item {
                 display: flex;
                 flex-direction: column;
-                padding: 12px; /* REDUCED from 15px */
+                padding: 12px;
                 background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
-                border-radius: 8px; /* REDUCED from 10px */
+                border-radius: 8px;
                 border: 1px solid #e2e8f0;
             }
             
             .contact-label {
                 font-weight: 700;
                 color: #1e293b;
-                font-size: 10px; /* REDUCED from 11px */
+                font-size: 10px;
                 text-transform: uppercase;
                 letter-spacing: 0.5px;
-                margin-bottom: 6px; /* REDUCED from 8px */
+                margin-bottom: 6px;
             }
             
             .contact-value {
                 color: #475569;
                 font-weight: 500;
-                font-size: 12px; /* REDUCED from 14px */
+                font-size: 12px;
                 word-wrap: break-word;
                 overflow-wrap: break-word;
             }
@@ -629,33 +670,33 @@ const generateReceiptHTML = (order, status = 'success') => {
             .plates-container {
                 display: flex;
                 flex-direction: column;
-                gap: 60px; /* LARGE gap between 2 cards */
+                gap: 60px;
                 flex: 1;
-                min-height: 500px; /* Ensure good vertical distribution */
-                justify-content: space-evenly; /* Distribute cards evenly */
+                min-height: 500px;
+                justify-content: space-evenly;
             }
             
             .plate-card {
                 background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
                 border: 2px solid #f59e0b;
-                border-radius: 20px; /* INCREASED for premium look */
-                padding: 40px; /* INCREASED for premium feel */
-                box-shadow: 0 12px 30px rgba(245, 158, 11, 0.2); /* ENHANCED shadow */
+                border-radius: 20px;
+                padding: 40px;
+                box-shadow: 0 12px 30px rgba(245, 158, 11, 0.2);
                 page-break-inside: avoid;
                 transition: all 0.3s ease;
-                min-height: 180px; /* INCREASED minimum height */
+                min-height: 180px;
             }
             
             .plate-card:hover {
-                transform: translateY(-4px); /* MORE pronounced hover */
+                transform: translateY(-4px);
                 box-shadow: 0 20px 40px rgba(245, 158, 11, 0.3);
             }
             
             .plate-header {
-                font-size: 16px; /* INCREASED from 15px */
+                font-size: 16px;
                 font-weight: 800;
                 color: #92400e;
-                margin-bottom: 25px; /* INCREASED from 18px */
+                margin-bottom: 25px;
                 text-transform: uppercase;
                 letter-spacing: 1px;
             }
@@ -664,28 +705,28 @@ const generateReceiptHTML = (order, status = 'success') => {
                 font-family: 'Courier New', monospace;
                 background: #1e293b;
                 color: white;
-                padding: 15px 25px; /* INCREASED significantly */
-                border-radius: 10px; /* INCREASED from 8px */
-                font-size: 20px; /* INCREASED from 18px */
+                padding: 15px 25px;
+                border-radius: 10px;
+                font-size: 20px;
                 font-weight: bold;
                 text-align: center;
-                letter-spacing: 4px; /* INCREASED from 3px */
-                margin-bottom: 25px; /* INCREASED from 18px */
-                box-shadow: 0 6px 15px rgba(30, 41, 59, 0.4); /* ENHANCED shadow */
+                letter-spacing: 4px;
+                margin-bottom: 25px;
+                box-shadow: 0 6px 15px rgba(30, 41, 59, 0.4);
             }
             
             .plate-config-grid {
                 display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); /* INCREASED from 130px */
-                gap: 15px; /* INCREASED from 12px */
+                grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+                gap: 15px;
             }
             
             .config-item {
-                background: rgba(255, 255, 255, 0.8); /* MORE opaque */
-                padding: 12px 15px; /* INCREASED from 10px 12px */
-                border-radius: 10px; /* INCREASED from 8px */
+                background: rgba(255, 255, 255, 0.8);
+                padding: 12px 15px;
+                border-radius: 10px;
                 border: 1px solid rgba(245, 158, 11, 0.3);
-                font-size: 12px; /* INCREASED from 11px */
+                font-size: 12px;
                 color: #78350f;
                 transition: all 0.2s ease;
             }
@@ -697,19 +738,19 @@ const generateReceiptHTML = (order, status = 'success') => {
             
             .config-label {
                 font-weight: 700;
-                margin-right: 8px; /* INCREASED from 6px */
+                margin-right: 8px;
                 color: #92400e;
             }
             
-            /* FIXING KIT STYLES - PREMIUM SPACING */
+            /* FIXING KIT STYLES - DIFFERENT FROM PLATES */
             .fixing-kit-card {
                 background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%);
                 border: 2px solid #0ea5e9;
-                border-radius: 20px; /* INCREASED for consistency */
-                padding: 40px; /* INCREASED for premium feel */
-                box-shadow: 0 12px 30px rgba(14, 165, 233, 0.2); /* ENHANCED shadow */
+                border-radius: 20px;
+                padding: 40px;
+                box-shadow: 0 12px 30px rgba(14, 165, 233, 0.2);
                 page-break-inside: avoid;
-                min-height: 180px; /* INCREASED minimum height */
+                min-height: 180px;
                 transition: all 0.3s ease;
             }
             
@@ -719,12 +760,40 @@ const generateReceiptHTML = (order, status = 'success') => {
             }
             
             .fixing-kit-header {
-                font-size: 16px; /* INCREASED from 15px */
+                font-size: 16px;
                 font-weight: 800;
                 color: #0c4a6e;
-                margin-bottom: 25px; /* INCREASED from 18px */
+                margin-bottom: 25px;
                 text-transform: uppercase;
                 letter-spacing: 1px;
+            }
+            
+            /* FIXING KIT SPECIFIC GRID */
+            .kit-config-grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+                gap: 15px;
+            }
+            
+            .kit-config-item {
+                background: rgba(255, 255, 255, 0.8);
+                padding: 12px 15px;
+                border-radius: 10px;
+                border: 1px solid rgba(14, 165, 233, 0.3);
+                font-size: 12px;
+                color: #0c4a6e;
+                transition: all 0.2s ease;
+            }
+            
+            .kit-config-item:hover {
+                background: rgba(255, 255, 255, 0.95);
+                transform: translateY(-1px);
+            }
+            
+            .kit-config-label {
+                font-weight: 700;
+                margin-right: 8px;
+                color: #0369a1;
             }
             
             /* NO TEXT DISPLAY FOR FIXING KITS */
@@ -755,33 +824,33 @@ const generateReceiptHTML = (order, status = 'success') => {
                 background: linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%);
                 border: 2px solid #f87171;
                 color: #7f1d1d;
-                padding: 20px 30px; /* REDUCED */
-                margin: 0 -30px 20px -30px; /* REDUCED */
+                padding: 20px 30px;
+                margin: 0 -30px 20px -30px;
                 text-align: center;
                 position: relative;
             }
             
             .failure-notice::before {
                 content: '⚠️';
-                font-size: 32px; /* REDUCED from 48px */
+                font-size: 32px;
                 position: absolute;
-                top: 15px; /* REDUCED from 20px */
-                left: 30px; /* REDUCED from 40px */
+                top: 15px;
+                left: 30px;
                 opacity: 0.3;
             }
             
             .failure-title {
-                font-size: 16px; /* REDUCED from 18px */
+                font-size: 16px;
                 font-weight: 700;
-                margin-bottom: 10px; /* REDUCED from 12px */
+                margin-bottom: 10px;
                 text-transform: uppercase;
                 letter-spacing: 1px;
             }
             
             .failure-message {
-                font-size: 12px; /* REDUCED from 13px */
+                font-size: 12px;
                 line-height: 1.6;
-                margin-left: 60px; /* REDUCED from 80px */
+                margin-left: 60px;
             }
             ` : ''}
             
@@ -796,7 +865,7 @@ const generateReceiptHTML = (order, status = 'success') => {
                 .page {
                     box-shadow: none;
                     page-break-after: always;
-                    padding: 20px; /* REDUCED for print */
+                    padding: 20px;
                 }
                 
                 .page:last-child {
@@ -908,7 +977,7 @@ const generateReceiptHTML = (order, status = 'success') => {
         </div>
         
         ${itemPages.map((pageItems, pageIndex) => `
-        <!-- PAGE ${pageIndex + 2}: PLATES DETAILS -->
+        <!-- PAGE ${pageIndex + 2}: ITEMS DETAILS -->
         <div class="page">
             <div class="page-content">
                 <!-- Continuation Header -->
@@ -927,18 +996,18 @@ const generateReceiptHTML = (order, status = 'success') => {
                     </div>
                 </div>
                 
-                <!-- Plates Container -->
+                <!-- Items Container -->
                 <div class="content-section">
                     <div class="section-header">🏁 Items Ordered</div>
                     <div class="plates-container">
                         ${pageItems.map(item => {
-                            const isFixingKit = item.type !== 'plate';
+                            const isFixingKit = item.type === 'fixing-kit';
                             return `
                             <div class="${isFixingKit ? 'fixing-kit-card' : 'plate-card'}">
                                 <div class="${isFixingKit ? 'fixing-kit-header' : 'plate-header'}">
                                     ${isFixingKit ? 
-                                        item.name.replace(/\s*\([^)]*\)$/, '') : // Remove (Front Plate) from fixing kit
-                                        `${item.name} (${item.plateConfiguration.side === 'front' ? 'Front' : 'Rear'} Plate)`
+                                        item.name : 
+                                        `${item.name} (${item.plateConfiguration.side.toUpperCase()} Plate)`
                                     }
                                 </div>
                                 
@@ -946,39 +1015,66 @@ const generateReceiptHTML = (order, status = 'success') => {
                                 <div class="plate-text-display">${item.plateConfiguration.text}</div>
                                 ` : ''}
                                 
-                                <div class="plate-config-grid">
-                                    <div class="config-item">
-                                        <span class="config-label">Size:</span>
-                                        <span>${item.plateConfiguration.size.label}</span>
-                                    </div>
-                                    <div class="config-item">
-                                        <span class="config-label">Style:</span>
-                                        <span>${item.plateConfiguration.plateStyle.label}</span>
-                                    </div>
-                                    <div class="config-item">
-                                        <span class="config-label">Color:</span>
-                                        <span>${item.plateConfiguration.fontColor.name}</span>
-                                    </div>
-                                    <div class="config-item">
-                                        <span class="config-label">Border:</span>
-                                        <span>${item.plateConfiguration.border.name}</span>
-                                    </div>
-                                    <div class="config-item">
-                                        <span class="config-label">Finish:</span>
-                                        <span>${item.plateConfiguration.finish.label}</span>
-                                    </div>
-                                    <div class="config-item">
-                                        <span class="config-label">Road Legal:</span>
-                                        <span>${item.plateConfiguration.roadLegal}</span>
-                                    </div>
-                                    <div class="config-item">
-                                        <span class="config-label">Quantity:</span>
-                                        <span>${item.quantity}</span>
-                                    </div>
-                                    <div class="config-item">
-                                        <span class="config-label">Price:</span>
-                                        <span>£${item.subtotal.toFixed(2)}</span>
-                                    </div>
+                                <div class="${isFixingKit ? 'kit-config-grid' : 'plate-config-grid'}">
+                                    ${isFixingKit ? `
+                                        <div class="kit-config-item">
+                                            <span class="kit-config-label">Contents:</span>
+                                            <span>${item.kitConfiguration.contents}</span>
+                                        </div>
+                                        <div class="kit-config-item">
+                                            <span class="kit-config-label">Compatibility:</span>
+                                            <span>${item.kitConfiguration.compatibility}</span>
+                                        </div>
+                                        <div class="kit-config-item">
+                                            <span class="kit-config-label">Installation:</span>
+                                            <span>${item.kitConfiguration.installation}</span>
+                                        </div>
+                                        <div class="kit-config-item">
+                                            <span class="kit-config-label">Warranty:</span>
+                                            <span>${item.kitConfiguration.warranty}</span>
+                                        </div>
+                                        <div class="kit-config-item">
+                                            <span class="kit-config-label">Quantity:</span>
+                                            <span>${item.quantity}</span>
+                                        </div>
+                                        <div class="kit-config-item">
+                                            <span class="kit-config-label">Price:</span>
+                                            <span>£${item.subtotal.toFixed(2)}</span>
+                                        </div>
+                                    ` : `
+                                        <div class="config-item">
+                                            <span class="config-label">Size:</span>
+                                            <span>${item.plateConfiguration.size.label}</span>
+                                        </div>
+                                        <div class="config-item">
+                                            <span class="config-label">Style:</span>
+                                            <span>${item.plateConfiguration.plateStyle.label}</span>
+                                        </div>
+                                        <div class="config-item">
+                                            <span class="config-label">Color:</span>
+                                            <span>${item.plateConfiguration.fontColor.name}</span>
+                                        </div>
+                                        <div class="config-item">
+                                            <span class="config-label">Border:</span>
+                                            <span>${item.plateConfiguration.border.name}</span>
+                                        </div>
+                                        <div class="config-item">
+                                            <span class="config-label">Finish:</span>
+                                            <span>${item.plateConfiguration.finish.label}</span>
+                                        </div>
+                                        <div class="config-item">
+                                            <span class="config-label">Road Legal:</span>
+                                            <span>${item.plateConfiguration.roadLegal}</span>
+                                        </div>
+                                        <div class="config-item">
+                                            <span class="config-label">Quantity:</span>
+                                            <span>${item.quantity}</span>
+                                        </div>
+                                        <div class="config-item">
+                                            <span class="config-label">Price:</span>
+                                            <span>£${item.subtotal.toFixed(2)}</span>
+                                        </div>
+                                    `}
                                 </div>
                             </div>
                             `;
