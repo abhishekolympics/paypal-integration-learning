@@ -87,6 +87,7 @@ const cartSessionSchema = new mongoose.Schema({
         price: { type: Number, required: true, min: 0 },
         quantity: { type: Number, required: true, min: 1 },
         subtotal: { type: Number, required: true, min: 0 },
+        configId: { type: String, required: true },
         
         // Plate configuration data
         registration: String,
@@ -137,6 +138,19 @@ const cartSessionSchema = new mongoose.Schema({
     createdAt: { type: Date, default: Date.now }
 });
 
+function generateItemConfigId(item) {
+    return [
+        item.registration || '',
+        item.side || '',
+        item.plateStyle || '',
+        item.thickness || '',
+        item.finish || '',
+        item.fontColor || '',
+        item.borderStyle || '',
+        item.countryBadge || '',
+        item.shadowEffect || ''
+    ].join('_').toLowerCase().replace(/[^a-z0-9]/g, '_');
+}
 
 
 // ===============================
@@ -194,7 +208,7 @@ const userSchema = new mongoose.Schema({
             price: { type: Number, min: 0 },
             quantity: { type: Number, min: 1 },
             subtotal: { type: Number, min: 0 },
-            // All the same fields as cartSessionSchema items
+            configId: { type: String, required: true },
             registration: String,
             side: String,
             roadLegal: String,
@@ -783,6 +797,8 @@ app.post('/api/cart', async (req, res) => {
             fontSize: parseFloat(item.fontSize) || 79,
             addedAt: new Date()
         };
+        enhancedItem.configId = generateItemConfigId(enhancedItem);
+        console.log('1 Enhanced Item:', enhancedItem);
         
         if (userId) {
             // Add to user cart
@@ -793,9 +809,7 @@ app.post('/api/cart', async (req, res) => {
             
             // Check if item already exists
             const existingIndex = user.userCart.items.findIndex(
-                cartItem => 
-                    cartItem.registration === enhancedItem.registration && 
-                    cartItem.side === enhancedItem.side
+                cartItem => cartItem.configId === enhancedItem.configId
             );
             
             if (existingIndex >= 0) {
@@ -836,9 +850,7 @@ app.post('/api/cart', async (req, res) => {
             
             // Check if item already exists
             const existingIndex = cartSession.items.findIndex(
-                cartItem => 
-                    cartItem.registration === enhancedItem.registration && 
-                    cartItem.side === enhancedItem.side
+                cartItem => cartItem.configId === enhancedItem.configId
             );
             
             if (existingIndex >= 0) {
@@ -853,6 +865,7 @@ app.post('/api/cart', async (req, res) => {
             
             cartSession.lastActive = new Date();
             await cartSession.save();
+            
             
             res.json({
                 success: true,
@@ -1093,9 +1106,7 @@ app.post('/api/cart/merge', authenticateUserToken, async (req, res) => {
         // Merge items (add guest items to existing user cart)
         for (const guestItem of cartSession.items) {
             const existingIndex = user.userCart.items.findIndex(
-                userItem => 
-                    userItem.registration === guestItem.registration && 
-                    userItem.side === guestItem.side
+                cartItem => cartItem.configId === enhancedItem.configId
             );
             
             if (existingIndex >= 0) {
@@ -1153,29 +1164,31 @@ app.get('/api/cart/:sessionId', async (req, res) => {
 });
 
 // Add item to cart
-app.post('/api/cart', async (req, res) => {
-    try {
-        const cartItemData = {
-            ...req.body,
-            subtotal: req.body.price * req.body.quantity,
-            updatedAt: new Date()
-        };
+// app.post('/api/cart', async (req, res) => {
+//     try {
+//         const cartItemData = {
+//             ...req.body,
+//             subtotal: req.body.price * req.body.quantity,
+//             updatedAt: new Date()
+//         };
+
+//         console.log('2 EnhancedItem:', cartItemData);
         
-        const cartItem = new CartItem(cartItemData);
-        const savedItem = await cartItem.save();
+//         const cartItem = new CartItem(cartItemData);
+//         const savedItem = await cartItem.save();
         
-        res.status(201).json({
-            success: true,
-            data: savedItem
-        });
-    } catch (error) {
-        console.error('Error adding item to cart:', error);
-        res.status(400).json({ 
-            success: false, 
-            error: 'Failed to add item to cart' 
-        });
-    }
-});
+//         res.status(201).json({
+//             success: true,
+//             data: savedItem
+//         });
+//     } catch (error) {
+//         console.error('Error adding item to cart:', error);
+//         res.status(400).json({ 
+//             success: false, 
+//             error: 'Failed to add item to cart' 
+//         });
+//     }
+// });
 
 // Update cart item quantity
 app.put('/api/cart/:id', async (req, res) => {

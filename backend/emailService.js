@@ -51,6 +51,159 @@ const generatePDFFromHTML = async (htmlContent, filename) => {
 };
 
 // FIXED: Transform order data with PROPER item consolidation and fixing kit handling
+// const transformOrderData = (order) => {
+//     const baseData = {
+//         orderId: order.orderId,
+//         customer: {
+//             firstName: order.customer?.firstName || 'Customer',
+//             lastName: order.customer?.lastName || '',
+//             email: order.customer?.email || 'customer@example.com',
+//             phone: order.customer?.phone || '',
+//             address: order.customer?.address || 'Not provided',
+//             city: order.customer?.city || 'Not provided',
+//             postcode: order.customer?.postcode || 'Not provided',
+//             country: order.customer?.country || 'GB'
+//         },
+//         orderStatus: order.orderStatus || 'processing',
+//         paymentStatus: order.paymentStatus || 'paid',
+//         pricing: {
+//             subtotal: order.pricing?.subtotal || 0,
+//             discount: order.pricing?.discount || 0,
+//             discountCode: order.pricing?.discountCode || '',
+//             shipping: order.pricing?.shipping || 0,
+//             tax: order.pricing?.tax || 0,
+//             taxRate: order.pricing?.taxRate || 0.20,
+//             total: order.pricing?.total || order.payment?.amount || 0
+//         },
+//         payment: {
+//             provider: order.payment?.provider || 'paypal',
+//             transactionId: order.payment?.transactionId || order.payment?.paypalPaymentId || 'N/A',
+//             amount: order.payment?.amount || order.pricing?.total || 0,
+//             currency: order.payment?.currency || 'GBP'
+//         },
+//         dates: {
+//             ordered: order.dates?.ordered || order.createdAt || new Date(),
+//             paid: order.dates?.paid || new Date()
+//         },
+//         notes: order.notes || ''
+//     };
+
+//     // FIXED: Process items correctly
+//     const rawItems = (order.items || []).map(item => {
+//         // FIXED: Handle fixing kit items differently
+//         if (item.type === 'fixing-kit') {
+//             return {
+//                 name: item.name || 'Fixing Kit',
+//                 type: 'fixing-kit',
+//                 price: item.price || 0,
+//                 quantity: item.quantity || 1,
+//                 subtotal: item.subtotal || 0,
+//                 kitConfiguration: {
+//                     contents: 'Sticky Pads & Screws',
+//                     compatibility: 'Universal fit for all plate sizes',
+//                     installation: 'Easy DIY installation',
+//                     warranty: '12 months'
+//                 }
+//             };
+//         } else {
+//             // Handle plate items
+//             return {
+//                 name: item.name || 'Number Plate',
+//                 type: item.type || 'plate',
+//                 price: item.price || 0,
+//                 quantity: item.quantity || 1,
+//                 subtotal: item.subtotal || 0,
+//                 plateConfiguration: {
+//                     text: item.plateConfiguration?.text || item.registration || 'UNKNOWN',
+//                     spacing: item.plateConfiguration?.spacing || 'legal',
+//                     side: item.plateConfiguration?.side || 'front',
+//                     size: {
+//                         label: item.plateConfiguration?.size?.label || 'Standard Size'
+//                     },
+//                     plateStyle: {
+//                         label: item.plateConfiguration?.plateStyle?.label || 'Standard Plate'
+//                     },
+//                     fontColor: {
+//                         name: item.plateConfiguration?.fontColor?.name || 'Black'
+//                     },
+//                     border: {
+//                         name: item.plateConfiguration?.border?.name || 'No Border'
+//                     },
+//                     finish: {
+//                         label: item.plateConfiguration?.finish?.label || 'Standard Finish'
+//                     },
+//                     roadLegal: item.plateConfiguration?.roadLegal || 'No'
+//                 }
+//             };
+//         }
+//     });
+
+//     // FIXED: Group ONLY plates with same text and side, keep fixing kits separate
+//     const groupedItems = {};
+    
+//     rawItems.forEach(item => {
+//         if (item.type === 'fixing-kit') {
+//             // Don't group fixing kits, each one is unique
+//             const uniqueKey = `fixing-kit-${Date.now()}-${Math.random()}`;
+//             groupedItems[uniqueKey] = { ...item };
+//         } else {
+//             // Group plates only by text, side, and style (not name)
+//             const groupKey = JSON.stringify({
+//                 type: item.type,
+//                 text: item.plateConfiguration.text,
+//                 side: item.plateConfiguration.side,
+//                 style: item.plateConfiguration.plateStyle.label
+//             });
+            
+//             if (groupedItems[groupKey]) {
+//                 // Combine quantities and prices
+//                 groupedItems[groupKey].quantity += item.quantity;
+//                 groupedItems[groupKey].subtotal += item.subtotal;
+//             } else {
+//                 // First occurrence of this item
+//                 groupedItems[groupKey] = { ...item };
+//             }
+//         }
+//     });
+
+//     // Convert back to array and sort properly
+//     const consolidatedItems = Object.values(groupedItems).sort((a, b) => {
+//         // First, separate plates from fixing kits
+//         if (a.type !== b.type) {
+//             return a.type === 'plate' ? -1 : 1; // Plates first, then fixing kits
+//         }
+        
+//         // For plates, sort by side (front first, then rear)
+//         if (a.type === 'plate' && b.type === 'plate') {
+//             const sideOrder = { 'FRONT': 0, 'front': 0, 'REAR': 1, 'rear': 1, 'both': 2 };
+//             const sideA = sideOrder[a.plateConfiguration?.side] || 3;
+//             const sideB = sideOrder[b.plateConfiguration?.side] || 3;
+            
+//             if (sideA !== sideB) return sideA - sideB;
+            
+//             // If same side, sort by text
+//             return (a.plateConfiguration?.text || '').localeCompare(b.plateConfiguration?.text || '');
+//         }
+        
+//         // For fixing kits, sort by name
+//         return a.name.localeCompare(b.name);
+//     });
+
+//     console.log('🔍 Transformed Items:', consolidatedItems.map(item => ({
+//         name: item.name,
+//         type: item.type,
+//         side: item.plateConfiguration?.side || 'N/A',
+//         text: item.plateConfiguration?.text || item.kitConfiguration?.contents || 'N/A',
+//         quantity: item.quantity
+//     })));
+
+//     return {
+//         ...baseData,
+//         items: consolidatedItems
+//     };
+// };
+
+// FIXED: Transform order data with PROPER nested structure extraction
 const transformOrderData = (order) => {
     const baseData = {
         orderId: order.orderId,
@@ -88,7 +241,7 @@ const transformOrderData = (order) => {
         notes: order.notes || ''
     };
 
-    // FIXED: Process items correctly
+    // FIXED: Process items with CORRECT nested structure extraction
     const rawItems = (order.items || []).map(item => {
         // FIXED: Handle fixing kit items differently
         if (item.type === 'fixing-kit') {
@@ -106,7 +259,9 @@ const transformOrderData = (order) => {
                 }
             };
         } else {
-            // Handle plate items
+            // FIXED: Properly extract ALL plateConfiguration nested data
+            const plateConfig = item.plateConfiguration || {};
+            
             return {
                 name: item.name || 'Number Plate',
                 type: item.type || 'plate',
@@ -114,31 +269,87 @@ const transformOrderData = (order) => {
                 quantity: item.quantity || 1,
                 subtotal: item.subtotal || 0,
                 plateConfiguration: {
-                    text: item.plateConfiguration?.text || item.registration || 'UNKNOWN',
-                    spacing: item.plateConfiguration?.spacing || 'legal',
-                    side: item.plateConfiguration?.side || 'front',
+                    // ✅ FIXED: Extract text properly
+                    text: plateConfig.text || item.registration || 'UNKNOWN',
+                    spacing: plateConfig.spacing || 'legal',
+                    side: plateConfig.side || 'front',
+                    
+                    // ✅ FIXED: Extract size object properly - THIS WAS THE MAIN ISSUE
                     size: {
-                        label: item.plateConfiguration?.size?.label || 'Standard Size'
+                        key: plateConfig.size?.key || 'standard',
+                        label: plateConfig.size?.label || 'Standard Size',
+                        dimensions: plateConfig.size?.dimensions || '520mm x 111mm'
                     },
+                    
+                    // ✅ FIXED: Extract plateStyle object properly
                     plateStyle: {
-                        label: item.plateConfiguration?.plateStyle?.label || 'Standard Plate'
+                        key: plateConfig.plateStyle?.key || 'standard',
+                        label: plateConfig.plateStyle?.label || 'Standard Plate',
+                        font: plateConfig.plateStyle?.font || 'Charles Wright',
+                        fontSize: plateConfig.plateStyle?.fontSize || 79,
+                        price: plateConfig.plateStyle?.price || 0
                     },
+                    
+                    // ✅ FIXED: Extract fontColor object properly
                     fontColor: {
-                        name: item.plateConfiguration?.fontColor?.name || 'Black'
+                        key: plateConfig.fontColor?.key || 'black',
+                        name: plateConfig.fontColor?.name || 'Black',
+                        color: plateConfig.fontColor?.color || '#000000',
+                        price: plateConfig.fontColor?.price || 0
                     },
+                    
+                    // ✅ FIXED: Extract border object properly - THIS WAS MISSING
                     border: {
-                        name: item.plateConfiguration?.border?.name || 'No Border'
+                        key: plateConfig.border?.key || 'none',
+                        name: plateConfig.border?.name || 'No Border',
+                        type: plateConfig.border?.type || 'none',
+                        color: plateConfig.border?.color || '',
+                        borderWidth: plateConfig.border?.borderWidth || 0,
+                        price: plateConfig.border?.price || 0
                     },
+                    
+                    // ✅ FIXED: Extract countryBadge object properly - THIS WAS MISSING
+                    countryBadge: {
+                        key: plateConfig.countryBadge?.key || 'none',
+                        name: plateConfig.countryBadge?.name || 'No Badge',
+                        country: plateConfig.countryBadge?.country || 'none',
+                        flagImage: plateConfig.countryBadge?.flagImage || '',
+                        position: plateConfig.countryBadge?.position || 'left',
+                        price: plateConfig.countryBadge?.price || 0
+                    },
+                    
+                    // ✅ FIXED: Extract finish object properly - THIS WAS MISSING
                     finish: {
-                        label: item.plateConfiguration?.finish?.label || 'Standard Finish'
+                        key: plateConfig.finish?.key || 'standard',
+                        label: plateConfig.finish?.label || 'Standard Finish',
+                        description: plateConfig.finish?.description || '',
+                        price: plateConfig.finish?.price || 0
                     },
-                    roadLegal: item.plateConfiguration?.roadLegal || 'No'
+                    
+                    // ✅ FIXED: Extract thickness object properly
+                    thickness: {
+                        key: plateConfig.thickness?.key || '3mm',
+                        label: plateConfig.thickness?.label || '3mm Standard',
+                        value: plateConfig.thickness?.value || 3,
+                        price: plateConfig.thickness?.price || 0
+                    },
+                    
+                    // ✅ FIXED: Extract shadowEffect object properly
+                    shadowEffect: {
+                        key: plateConfig.shadowEffect?.key || 'none',
+                        name: plateConfig.shadowEffect?.name || 'No Effect',
+                        description: plateConfig.shadowEffect?.description || '',
+                        price: plateConfig.shadowEffect?.price || 0
+                    },
+                    
+                    roadLegal: plateConfig.roadLegal || 'No',
+                    legalNotes: plateConfig.legalNotes || (plateConfig.roadLegal === 'No' ? 'Show plates only - not for road use' : '')
                 }
             };
         }
     });
 
-    // FIXED: Group ONLY plates with same text and side, keep fixing kits separate
+    // FIXED: Group ONLY plates with same text, side, and ALL configuration details
     const groupedItems = {};
     
     rawItems.forEach(item => {
@@ -147,20 +358,25 @@ const transformOrderData = (order) => {
             const uniqueKey = `fixing-kit-${Date.now()}-${Math.random()}`;
             groupedItems[uniqueKey] = { ...item };
         } else {
-            // Group plates only by text, side, and style (not name)
+            // ✅ FIXED: Create detailed grouping key that includes ALL configuration
             const groupKey = JSON.stringify({
                 type: item.type,
                 text: item.plateConfiguration.text,
                 side: item.plateConfiguration.side,
-                style: item.plateConfiguration.plateStyle.label
+                sizeKey: item.plateConfiguration.size.key,           // ✅ Include size key
+                styleKey: item.plateConfiguration.plateStyle.key,    // ✅ Include style key
+                borderKey: item.plateConfiguration.border.key,       // ✅ Include border key
+                badgeKey: item.plateConfiguration.countryBadge.key,  // ✅ Include badge key
+                finishKey: item.plateConfiguration.finish.key,       // ✅ Include finish key
+                thicknessKey: item.plateConfiguration.thickness.key  // ✅ Include thickness key
             });
             
             if (groupedItems[groupKey]) {
-                // Combine quantities and prices
+                // Combine quantities and prices for IDENTICAL configurations
                 groupedItems[groupKey].quantity += item.quantity;
                 groupedItems[groupKey].subtotal += item.subtotal;
             } else {
-                // First occurrence of this item
+                // First occurrence of this exact configuration
                 groupedItems[groupKey] = { ...item };
             }
         }
@@ -189,12 +405,17 @@ const transformOrderData = (order) => {
         return a.name.localeCompare(b.name);
     });
 
-    console.log('🔍 Transformed Items:', consolidatedItems.map(item => ({
+    console.log('🔍 FIXED Transformed Items:', consolidatedItems.map(item => ({
         name: item.name,
         type: item.type,
         side: item.plateConfiguration?.side || 'N/A',
         text: item.plateConfiguration?.text || item.kitConfiguration?.contents || 'N/A',
-        quantity: item.quantity
+        size: item.plateConfiguration?.size?.label || 'N/A',          // ✅ Now shows correct size
+        border: item.plateConfiguration?.border?.name || 'N/A',       // ✅ Now shows correct border
+        badge: item.plateConfiguration?.countryBadge?.name || 'N/A',  // ✅ Now shows correct badge
+        finish: item.plateConfiguration?.finish?.label || 'N/A',      // ✅ Now shows correct finish
+        quantity: item.quantity,
+        price: item.subtotal
     })));
 
     return {
