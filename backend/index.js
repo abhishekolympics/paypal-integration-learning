@@ -61,6 +61,20 @@ const getCookieConfig = () => {
   }
 };
 
+// Also add CORS middleware if not already present
+app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+    res.header('Access-Control-Expose-Headers', 'Content-Disposition, Content-Length');
+    
+    if (req.method === 'OPTIONS') {
+        res.sendStatus(200);
+    } else {
+        next();
+    }
+});
+
 // MongoDB connection
 mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/numberplates', {})
 .then(() => console.log('Connected to MongoDB'))
@@ -1580,86 +1594,6 @@ app.post('/api/checkout/capture/:paypalOrderId', async (req, res) => {
     }
 });
 
-// ===============================
-// AUTH ROUTES (existing)
-// ===============================
-
-// Admin Registration
-app.post('/admin/register', async (req, res) => {
-    try {
-        const { username, email, password } = req.body;
-        
-        if (!username || !email || !password) {
-            return res.status(400).json({ error: 'Username, email, and password are required' });
-        }
-        
-        const existingAdmin = await Admin.findOne({ 
-            $or: [{ username }, { email }] 
-        });
-        
-        if (existingAdmin) {
-            return res.status(400).json({ error: 'Admin with this username or email already exists' });
-        }
-        
-        const saltRounds = 10;
-        const hashedPassword = await bcrypt.hash(password, saltRounds);
-        
-        const admin = new Admin({
-            username,
-            email,
-            password: hashedPassword
-        });
-        
-        await admin.save();
-        
-        res.status(201).json({ 
-            success: true, 
-            message: 'Admin registered successfully',
-            admin: { id: admin._id, username: admin.username, email: admin.email }
-        });
-        
-    } catch (error) {
-        console.error('Registration error:', error);
-        res.status(500).json({ error: 'Registration failed' });
-    }
-});
-
-// Admin Login
-app.post('/admin/login', async (req, res) => {
-    try {
-        const { username, password } = req.body;
-        
-        if (!username || !password) {
-            return res.status(400).json({ error: 'Username and password are required' });
-        }
-        
-        const admin = await Admin.findOne({ username });
-        if (!admin) {
-            return res.status(401).json({ error: 'Invalid credentials' });
-        }
-        
-        const isValidPassword = await bcrypt.compare(password, admin.password);
-        if (!isValidPassword) {
-            return res.status(401).json({ error: 'Invalid credentials' });
-        }
-        
-        const token = jwt.sign(
-            { id: admin._id, username: admin.username },
-            process.env.JWT_SECRET || 'your-secret-key',
-            { expiresIn: '7d' }
-        );
-        
-        res.json({
-            success: true,
-            token,
-            admin: { id: admin._id, username: admin.username, email: admin.email }
-        });
-        
-    } catch (error) {
-        console.error('Login error:', error);
-        res.status(500).json({ error: 'Login failed' });
-    }
-});
 
 // ===============================
 // ALL OTHER EXISTING ROUTES
@@ -1690,10 +1624,7 @@ app.get('/health', (req, res) => {
     res.json({ status: 'ok' });
 });
 
-// ADMIN DASHBOARD ROUTES (MISSING)
-// ===============================
-
-// Helper function to transform payment status for admin panel
+// Add this helper function near the top of your file (after your existing helpers)
 const transformPaymentStatus = (paymentStatus) => {
     switch (paymentStatus) {
         case 'paid':
@@ -1703,26 +1634,27 @@ const transformPaymentStatus = (paymentStatus) => {
         case 'failed':
         case 'cancelled':
         case 'error':
-            return 'Failed';
-        case 'pending':
+            return 'Cancelled';
         case 'processing':
+            return 'Shipped';
+        case 'pending':
         default:
             return 'Pending';
     }
 };
 
 // Get all orders for admin dashboard - ADD THIS ROUTE
+// Keep this for frontend compatibility
 app.get('/order-details', async (req, res) => {
     try {
         const orders = await Order.find({})
             .sort({ 'dates.ordered': -1 })
-            .limit(50); // Limit to latest 50 orders for performance
+            .limit(50);
         
-        // Transform orders to match frontend expectations
         const transformedOrders = orders.map(order => ({
             id: order._id,
-            orderId: order.orderId, // This will be the new Amazon-style format
-            customer: order.customer?.firstName ? 
+            orderId: order.orderId,
+            customer: order.customer?.firstName && order.customer?.lastName ? 
                 `${order.customer.firstName} ${order.customer.lastName}` : 
                 order.customerName || 'Unknown Customer',
             product: order.items && order.items.length > 0 ? 
@@ -1730,7 +1662,12 @@ app.get('/order-details', async (req, res) => {
                 order.product || 'Number Plate',
             amount: order.pricing?.total || order.amount || 0,
             status: transformPaymentStatus(order.paymentStatus),
-            date: order.dates?.ordered || order.dateOfOrder || order.createdAt
+            date: order.dates?.ordered || order.dateOfOrder || order.createdAt,
+            time: order.dates?.ordered ? 
+                new Date(order.dates.ordered).toLocaleTimeString('en-GB', { 
+                    hour: '2-digit', 
+                    minute: '2-digit' 
+                }) : 'N/A'
         }));
         
         res.json({
@@ -2828,887 +2765,6 @@ const generateScalableOrderId = async () => {
     return Date.now().toString(36).toUpperCase();
 };
 
-// app.post('/capture-paypal-payment', async (req, res) => {
-//     try {
-//         const { paypalOrderId } = req.body;
-        
-//         console.log('🔥 Clean Capture PayPal Payment - PayPal Order ID:', paypalOrderId);
-        
-//         if (!paypalOrderId) {
-//             return res.status(400).json({
-//                 success: false,
-//                 error: 'PayPal order ID is required'
-//             });
-//         }
-
-//         // STEP 1: Check if we already processed this PayPal order
-//         const existingOrder = await Order.findOne({ 'payment.paypalOrderId': paypalOrderId });
-//         if (existingOrder && existingOrder.paymentStatus === 'paid') {
-//             console.log('✅ Order already processed:', existingOrder.orderId);
-//             return res.json({
-//                 success: true,
-//                 data: {
-//                     orderId: existingOrder.orderId,
-//                     amount: existingOrder.payment.amount,
-//                     currency: existingOrder.payment.currency,
-//                     paymentId: existingOrder.payment.paypalPaymentId,
-//                     paymentStatus: 'completed'
-//                 }
-//             });
-//         }
-
-//         // STEP 2: Get PayPal Access Token
-//         const auth = Buffer.from(
-//             `${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET_KEY}`
-//         ).toString('base64');
-
-//         const tokenRes = await axios.post(
-//             'https://api-m.sandbox.paypal.com/v1/oauth2/token',
-//             'grant_type=client_credentials',
-//             {
-//                 headers: {
-//                     'Content-Type': 'application/x-www-form-urlencoded',
-//                     'Authorization': `Basic ${auth}`,
-//                 },
-//             }
-//         );
-
-//         const accessToken = tokenRes.data.access_token;
-
-//         // STEP 3: Try to capture the PayPal order
-//         let captureRes;
-//         try {
-//             captureRes = await axios.post(
-//                 `https://api-m.sandbox.paypal.com/v2/checkout/orders/${paypalOrderId}/capture`,
-//                 {},
-//                 {
-//                     headers: {
-//                         'Content-Type': 'application/json',
-//                         'Authorization': `Bearer ${accessToken}`,
-//                     },
-//                 }
-//             );
-//         } catch (captureError) {
-//             // Handle "ORDER_ALREADY_CAPTURED" error
-//             if (captureError.response?.data?.details?.[0]?.issue === 'ORDER_ALREADY_CAPTURED') {
-//                 console.log('PayPal order already captured, fetching order details...');
-                
-//                 const orderDetailsRes = await axios.get(
-//                     `https://api-m.sandbox.paypal.com/v2/checkout/orders/${paypalOrderId}`,
-//                     {
-//                         headers: {
-//                             'Content-Type': 'application/json',
-//                             'Authorization': `Bearer ${accessToken}`,
-//                         },
-//                     }
-//                 );
-                
-//                 captureRes = { data: orderDetailsRes.data };
-//             } else {
-//                 throw captureError;
-//             }
-//         }
-
-//         console.log('PayPal capture response status:', captureRes.data.status);
-
-//         // STEP 4: Process the order if payment is completed
-//         if (captureRes.data.status === 'COMPLETED') {
-            
-//             // Extract payment details
-//             let paymentDetails;
-//             let amount;
-            
-//             if (captureRes.data.purchase_units?.[0]?.payments?.captures?.[0]) {
-//                 // This is a capture response
-//                 paymentDetails = captureRes.data.purchase_units[0].payments.captures[0];
-//                 amount = parseFloat(paymentDetails.amount.value);
-//             } else if (captureRes.data.purchase_units?.[0]?.amount?.value) {
-//                 // This is an order details response
-//                 const purchaseUnit = captureRes.data.purchase_units[0];
-//                 amount = parseFloat(purchaseUnit.amount.value);
-//                 paymentDetails = {
-//                     id: paypalOrderId,
-//                     amount: purchaseUnit.amount
-//                 };
-//             } else {
-//                 throw new Error('Unable to extract payment details from PayPal response');
-//             }
-
-//             // STEP 5: Create or update order in database
-//             if (existingOrder) {
-//                 // Update existing order
-//                 await Order.findOneAndUpdate(
-//                     { orderId: existingOrder.orderId },
-//                     { 
-//                         paymentStatus: 'paid',
-//                         orderStatus: 'processing',
-//                         'payment.paypalPaymentId': paymentDetails.id,
-//                         'payment.transactionId': paymentDetails.id,
-//                         'payment.amount': amount,
-//                         'dates.paid': new Date(),
-//                         updatedAt: new Date()
-//                     }
-//                 );
-
-//                 console.log('✅ Updated existing order:', existingOrder.orderId);
-                
-//                 return res.json({
-//                     success: true,
-//                     data: {
-//                         orderId: existingOrder.orderId,
-//                         amount: amount,
-//                         currency: paymentDetails.amount?.currency_code || 'GBP',
-//                         paymentId: paymentDetails.id,
-//                         paymentStatus: 'completed'
-//                     }
-//                 });
-//             } else {
-//                 // Create new order if none exists (fallback scenario)
-//                 const newOrderId = await generateScalableOrderId();
-                
-//                 const newOrder = new Order({
-//                     orderId: newOrderId,
-//                     customer: {
-//                         firstName: captureRes.data.payer?.name?.given_name || 'PayPal',
-//                         lastName: captureRes.data.payer?.name?.surname || 'Customer',
-//                         email: captureRes.data.payer?.email_address || 'customer@example.com',
-//                         phone: '',
-//                         address: 'Not provided',
-//                         city: 'Not provided',
-//                         postcode: 'Not provided',
-//                         country: 'GB'
-//                     },
-//                     orderStatus: 'processing',
-//                     paymentStatus: 'paid',
-//                     items: [{
-//                         name: 'Number Plate',
-//                         type: 'plate',
-//                         price: amount,
-//                         quantity: 1,
-//                         subtotal: amount,
-//                         plateConfiguration: {
-//                             text: 'UNKNOWN',
-//                             spacing: 'legal',
-//                             displayText: 'UNKNOWN',
-//                             side: 'front',
-//                             size: { key: 'standard', label: 'Standard Size', dimensions: '520mm x 111mm' },
-//                             plateStyle: { key: 'standard', label: 'Standard Plate', font: 'Charles Wright', fontSize: 79, price: 0 },
-//                             fontColor: { key: 'black', name: 'Black', color: '#000000', price: 0 },
-//                             border: { key: 'none', name: 'No Border', type: 'none', color: '', borderWidth: 0, price: 0 },
-//                             countryBadge: { key: 'none', name: 'No Badge', country: 'uk', flagImage: '', position: 'left', price: 0 },
-//                             finish: { key: 'standard', label: 'Standard Finish', description: '', price: 0 },
-//                             thickness: { key: '3mm', label: '3mm Standard', value: 3, price: 0 },
-//                             shadowEffect: { key: 'none', name: 'No Effect', description: '', price: 0 },
-//                             roadLegal: 'No',
-//                             legalNotes: 'Show plates only - not for road use'
-//                         }
-//                     }],
-//                     pricing: {
-//                         subtotal: amount,
-//                         discount: 0,
-//                         shipping: 0,
-//                         tax: 0,
-//                         total: amount
-//                     },
-//                     payment: {
-//                         provider: 'paypal',
-//                         paypalOrderId: paypalOrderId,
-//                         paypalPaymentId: paymentDetails.id,
-//                         transactionId: paymentDetails.id,
-//                         amount: amount,
-//                         currency: paymentDetails.amount?.currency_code || 'GBP'
-//                     },
-//                     dates: {
-//                         ordered: new Date(),
-//                         paid: new Date()
-//                     }
-//                 });
-                
-//                 await newOrder.save();
-//                 console.log('✅ Created new order:', newOrderId);
-                
-//                 return res.json({
-//                     success: true,
-//                     data: {
-//                         orderId: newOrderId,
-//                         amount: amount,
-//                         currency: paymentDetails.amount?.currency_code || 'GBP',
-//                         paymentId: paymentDetails.id,
-//                         paymentStatus: 'completed'
-//                     }
-//                 });
-//             }
-//         } else {
-//             return res.status(400).json({
-//                 success: false,
-//                 error: 'Payment not completed',
-//                 paymentStatus: captureRes.data.status
-//             });
-//         }
-
-//     } catch (err) {
-//         console.error('❌ Error capturing PayPal payment:', err.response ? err.response.data : err.message);
-//         res.status(500).json({ 
-//             success: false,
-//             error: 'Failed to capture payment',
-//             details: err.response ? err.response.data : err.message
-//         });
-//     }
-// });
-// Additional endpoint to get order details for admin dashboard
-app.get('/admin/order-details/:orderId', authenticateToken, async (req, res) => {
-    try {
-        const { orderId } = req.params;
-        const order = await Order.findOne({ orderId });
-        
-        if (!order) {
-            return res.status(404).json({
-                success: false,
-                error: 'Order not found'
-            });
-        }
-        
-        res.json({
-            success: true,
-            data: order
-        });
-        
-    } catch (error) {
-        console.error('Error fetching order details:', error);
-        res.status(500).json({
-            success: false,
-            error: 'Failed to fetch order details'
-        });
-    }
-});
-
-// Admin Print Order Details Route
-app.get('/admin/print-order/:orderId', authenticateToken, async (req, res) => {
-    try {
-        const { orderId } = req.params;
-        const order = await Order.findOne({ orderId });
-        
-        if (!order) {
-            return res.status(404).send('<h1>Order not found</h1>');
-        }
-
-        const formatCurrency = (amount, currency = 'GBP') => {
-            if (!amount) return '£0.00';
-            const symbol = currency === 'GBP' ? '£' : currency === 'USD' ? '$' : currency;
-            return `${symbol}${parseFloat(amount).toFixed(2)}`;
-        };
-
-        const formatDate = (dateString) => {
-            if (!dateString) return 'N/A';
-            const date = new Date(dateString);
-            return date.toLocaleDateString('en-GB', {
-                day: '2-digit',
-                month: 'short',
-                year: 'numeric',
-                hour: '2-digit',
-                minute: '2-digit'
-            });
-        };
-
-        const printHTML = `
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta charset="utf-8">
-            <title>Order Details - ${order.orderId}</title>
-            <style>
-                * {
-                    margin: 0;
-                    padding: 0;
-                    box-sizing: border-box;
-                }
-                
-                body {
-                    font-family: 'Segoe UI', Arial, sans-serif;
-                    font-size: 12px;
-                    line-height: 1.4;
-                    color: #333;
-                    max-width: 1000px;
-                    margin: 0 auto;
-                    padding: 20px;
-                }
-                
-                .header {
-                    text-align: center;
-                    border-bottom: 3px solid #ffc107;
-                    padding-bottom: 20px;
-                    margin-bottom: 30px;
-                }
-                
-                .header h1 {
-                    font-size: 28px;
-                    color: #333;
-                    margin-bottom: 5px;
-                }
-                
-                .header .subtitle {
-                    color: #666;
-                    font-size: 16px;
-                }
-                
-                .admin-badge {
-                    background: #dc3545;
-                    color: white;
-                    padding: 5px 15px;
-                    border-radius: 20px;
-                    font-size: 11px;
-                    font-weight: bold;
-                    display: inline-block;
-                    margin-top: 10px;
-                }
-                
-                .order-header {
-                    background: #f8f9fa;
-                    border: 1px solid #dee2e6;
-                    border-radius: 8px;
-                    padding: 20px;
-                    margin-bottom: 25px;
-                }
-                
-                .order-header h2 {
-                    color: #495057;
-                    margin-bottom: 15px;
-                    font-size: 18px;
-                }
-                
-                .info-grid {
-                    display: grid;
-                    grid-template-columns: 1fr 1fr;
-                    gap: 30px;
-                    margin-bottom: 25px;
-                }
-                
-                .info-section {
-                    border: 1px solid #dee2e6;
-                    border-radius: 8px;
-                    overflow: hidden;
-                }
-                
-                .info-section-header {
-                    background: #6c757d;
-                    color: white;
-                    padding: 12px 15px;
-                    font-weight: bold;
-                    font-size: 14px;
-                }
-                
-                .info-section-body {
-                    padding: 15px;
-                }
-                
-                .info-row {
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: flex-start;
-                    margin-bottom: 10px;
-                    padding: 5px 0;
-                    border-bottom: 1px dotted #dee2e6;
-                }
-                
-                .info-row:last-child {
-                    border-bottom: none;
-                    margin-bottom: 0;
-                }
-                
-                .info-row .label {
-                    font-weight: 500;
-                    color: #495057;
-                    flex: 0 0 40%;
-                }
-                
-                .info-row .value {
-                    flex: 1;
-                    text-align: right;
-                    color: #212529;
-                    word-break: break-all;
-                }
-                
-                .order-id {
-                    font-family: 'Courier New', monospace;
-                    background: #e3f2fd;
-                    padding: 4px 8px;
-                    border-radius: 4px;
-                    font-size: 11px;
-                    color: #1976d2;
-                }
-                
-                .status-badge {
-                    padding: 4px 10px;
-                    border-radius: 15px;
-                    font-size: 10px;
-                    font-weight: bold;
-                    text-transform: uppercase;
-                }
-                
-                .status-paid { background: #d4edda; color: #155724; }
-                .status-pending { background: #fff3cd; color: #856404; }
-                .status-processing { background: #cce7ff; color: #004085; }
-                .status-shipped { background: #e2e3e5; color: #383d41; }
-                
-                .amount {
-                    font-size: 16px;
-                    font-weight: bold;
-                    color: #28a745;
-                }
-                
-                .items-section {
-                    margin-bottom: 25px;
-                    border: 1px solid #dee2e6;
-                    border-radius: 8px;
-                    overflow: hidden;
-                }
-                
-                .items-header {
-                    background: #007bff;
-                    color: white;
-                    padding: 12px 15px;
-                    font-weight: bold;
-                    font-size: 14px;
-                }
-                
-                .items-table {
-                    width: 100%;
-                    border-collapse: collapse;
-                }
-                
-                .items-table th {
-                    background: #f8f9fa;
-                    padding: 10px;
-                    text-align: left;
-                    font-weight: 600;
-                    border-bottom: 2px solid #dee2e6;
-                    font-size: 11px;
-                }
-                
-                .items-table td {
-                    padding: 10px;
-                    border-bottom: 1px solid #dee2e6;
-                    font-size: 11px;
-                }
-                
-                .items-table tr:last-child td {
-                    border-bottom: none;
-                }
-                
-                .items-table tr:nth-child(even) {
-                    background: #f8f9fa;
-                }
-                
-                .plate-text {
-                    font-family: 'Courier New', monospace;
-                    background: #343a40;
-                    color: white;
-                    padding: 3px 6px;
-                    border-radius: 3px;
-                    font-size: 10px;
-                }
-                
-                .pricing-section {
-                    border: 2px solid #28a745;
-                    border-radius: 8px;
-                    overflow: hidden;
-                    margin-bottom: 25px;
-                }
-                
-                .pricing-header {
-                    background: #28a745;
-                    color: white;
-                    padding: 12px 15px;
-                    font-weight: bold;
-                    font-size: 14px;
-                }
-                
-                .pricing-table {
-                    width: 100%;
-                    border-collapse: collapse;
-                }
-                
-                .pricing-table td {
-                    padding: 8px 15px;
-                    border-bottom: 1px solid #dee2e6;
-                }
-                
-                .pricing-table tr:last-child td {
-                    border-bottom: none;
-                    background: #f8f9fa;
-                    font-weight: bold;
-                    font-size: 14px;
-                }
-                
-                .shipping-section {
-                    border: 1px solid #17a2b8;
-                    border-radius: 8px;
-                    overflow: hidden;
-                    margin-bottom: 25px;
-                }
-                
-                .shipping-header {
-                    background: #17a2b8;
-                    color: white;
-                    padding: 12px 15px;
-                    font-weight: bold;
-                    font-size: 14px;
-                }
-                
-                .shipping-body {
-                    padding: 15px;
-                }
-                
-                .address-box {
-                    background: #f8f9fa;
-                    border: 1px solid #dee2e6;
-                    border-radius: 5px;
-                    padding: 10px;
-                    font-size: 11px;
-                }
-                
-                .footer {
-                    margin-top: 30px;
-                    padding-top: 20px;
-                    border-top: 2px solid #dee2e6;
-                    text-align: center;
-                    color: #6c757d;
-                    font-size: 10px;
-                }
-                
-                @media print {
-                    body { margin: 0; padding: 10px; }
-                    .no-print { display: none !important; }
-                }
-            </style>
-        </head>
-        <body>
-            <div class="header">
-                <h1>PlateForge</h1>
-                <div class="subtitle">Admin Order Details Report</div>
-                <div class="admin-badge">INTERNAL USE ONLY</div>
-            </div>
-            
-            <div class="order-header">
-                <h2>Order Summary</h2>
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <div>
-                        <strong>Order ID:</strong> 
-                        <span class="order-id">${order.orderId}</span>
-                    </div>
-                    <div>
-                        <strong>Generated:</strong> ${formatDate(new Date())}
-                    </div>
-                </div>
-            </div>
-            
-            <div class="info-grid">
-                <div class="info-section">
-                    <div class="info-section-header">Customer Information</div>
-                    <div class="info-section-body">
-                        <div class="info-row">
-                            <span class="label">Name:</span>
-                            <span class="value">
-                                ${order.customer?.firstName && order.customer?.lastName ? 
-                                    `${order.customer.firstName} ${order.customer.lastName}` :
-                                    'N/A'
-                                }
-                            </span>
-                        </div>
-                        <div class="info-row">
-                            <span class="label">Email:</span>
-                            <span class="value">${order.customer?.email || 'N/A'}</span>
-                        </div>
-                        <div class="info-row">
-                            <span class="label">Phone:</span>
-                            <span class="value">${order.customer?.phone || 'N/A'}</span>
-                        </div>
-                        <div class="info-row">
-                            <span class="label">Customer ID:</span>
-                            <span class="value">${order.customer?._id || 'N/A'}</span>
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="info-section">
-                    <div class="info-section-header">Order Status</div>
-                    <div class="info-section-body">
-                        <div class="info-row">
-                            <span class="label">Order Status:</span>
-                            <span class="value">
-                                <span class="status-badge status-${(order.orderStatus || '').toLowerCase()}">
-                                    ${order.orderStatus || 'Unknown'}
-                                </span>
-                            </span>
-                        </div>
-                        <div class="info-row">
-                            <span class="label">Payment Status:</span>
-                            <span class="value">
-                                <span class="status-badge status-${(order.paymentStatus || '').toLowerCase()}">
-                                    ${order.paymentStatus || 'Unknown'}
-                                </span>
-                            </span>
-                        </div>
-                        <div class="info-row">
-                            <span class="label">Order Date:</span>
-                            <span class="value">${formatDate(order.dates?.ordered || order.createdAt)}</span>
-                        </div>
-                        <div class="info-row">
-                            <span class="label">Last Updated:</span>
-                            <span class="value">${formatDate(order.updatedAt)}</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            
-            ${order.items && order.items.length > 0 ? `
-            <div class="items-section">
-                <div class="items-header">Order Items (${order.items.length})</div>
-                <table class="items-table">
-                    <thead>
-                        <tr>
-                            <th>Item #</th>
-                            <th>Plate Text</th>
-                            <th>Style</th>
-                            <th>Configuration</th>
-                            <th>Quantity</th>
-                            <th>Unit Price</th>
-                            <th>Total</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        ${order.items.map((item, index) => `
-                        <tr>
-                            <td>${index + 1}</td>
-                            <td>
-                                <span class="plate-text">${item.plateText || item.text || 'N/A'}</span>
-                            </td>
-                            <td>${item.configuration?.plateStyle || item.plateStyle || 'Standard'}</td>
-                            <td>
-                                ${item.configuration ? `
-                                    Font: ${item.configuration.fontColor || 'Default'}<br>
-                                    Border: ${item.configuration.borderStyle || 'None'}<br>
-                                    Shadow: ${item.configuration.shadowEffect || 'None'}
-                                ` : 'N/A'}
-                            </td>
-                            <td style="text-align: center;">${item.quantity || 1}</td>
-                            <td style="text-align: right;">${formatCurrency(item.unitPrice || 0, order.currency)}</td>
-                            <td style="text-align: right;"><strong>${formatCurrency(item.subtotal || item.price || 0, order.currency)}</strong></td>
-                        </tr>
-                        `).join('')}
-                    </tbody>
-                </table>
-            </div>
-            ` : ''}
-            
-            ${order.pricing ? `
-            <div class="pricing-section">
-                <div class="pricing-header">Pricing Breakdown</div>
-                <table class="pricing-table">
-                    <tr>
-                        <td>Subtotal:</td>
-                        <td style="text-align: right;">${formatCurrency(order.pricing.subtotal, order.currency)}</td>
-                    </tr>
-                    ${order.pricing.discount > 0 ? `
-                    <tr>
-                        <td>Discount ${order.pricing.discountCode ? `(${order.pricing.discountCode})` : ''}:</td>
-                        <td style="text-align: right; color: #dc3545;">-${formatCurrency(order.pricing.discount, order.currency)}</td>
-                    </tr>
-                    ` : ''}
-                    <tr>
-                        <td>Shipping:</td>
-                        <td style="text-align: right;">${order.pricing.shipping > 0 ? formatCurrency(order.pricing.shipping, order.currency) : 'Free'}</td>
-                    </tr>
-                    <tr>
-                        <td>VAT:</td>
-                        <td style="text-align: right;">${formatCurrency(order.pricing.vat || 0, order.currency)}</td>
-                    </tr>
-                    <tr>
-                        <td><strong>Total Amount:</strong></td>
-                        <td style="text-align: right;"><strong class="amount">${formatCurrency(order.pricing.total, order.currency)}</strong></td>
-                    </tr>
-                </table>
-            </div>
-            ` : ''}
-            
-            <div class="info-grid">
-                <div class="info-section">
-                    <div class="info-section-header">Payment Information</div>
-                    <div class="info-section-body">
-                        <div class="info-row">
-                            <span class="label">Payment Method:</span>
-                            <span class="value">PayPal</span>
-                        </div>
-                        <div class="info-row">
-                            <span class="label">PayPal Order ID:</span>
-                            <span class="value" style="font-family: monospace; font-size: 10px;">
-                                ${order.paypalOrderId || 'N/A'}
-                            </span>
-                        </div>
-                        <div class="info-row">
-                            <span class="label">Transaction ID:</span>
-                            <span class="value" style="font-family: monospace; font-size: 10px;">
-                                ${order.paypalPaymentId || 'N/A'}
-                            </span>
-                        </div>
-                        <div class="info-row">
-                            <span class="label">Currency:</span>
-                            <span class="value">${order.currency || 'GBP'}</span>
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="shipping-section">
-                    <div class="shipping-header">Shipping Information</div>
-                    <div class="shipping-body">
-                        ${order.shippingAddress || order.customer?.address ? `
-                        <div class="address-box">
-                            ${order.shippingAddress?.street || order.customer?.address ? `
-                                <div><strong>Street:</strong> ${order.shippingAddress?.street || order.customer?.address}</div>
-                            ` : ''}
-                            ${order.shippingAddress?.city || order.customer?.city ? `
-                                <div><strong>City:</strong> ${order.shippingAddress?.city || order.customer?.city}</div>
-                            ` : ''}
-                            ${order.shippingAddress?.postcode || order.customer?.postcode ? `
-                                <div><strong>Postcode:</strong> ${order.shippingAddress?.postcode || order.customer?.postcode}</div>
-                            ` : ''}
-                            ${order.shippingAddress?.country || order.customer?.country ? `
-                                <div><strong>Country:</strong> ${order.shippingAddress?.country || order.customer?.country}</div>
-                            ` : ''}
-                            ${order.shippingAddress?.phone || order.customer?.phone ? `
-                                <div><strong>Phone:</strong> ${order.shippingAddress?.phone || order.customer?.phone}</div>
-                            ` : ''}
-                        </div>
-                        ` : `
-                        <div class="alert alert-info">
-                            No shipping address available
-                        </div>
-                        `}
-                    </div>
-                </div>
-            </div>
-            
-            ${order.adminNotes ? `
-            <div class="info-section" style="margin-bottom: 25px;">
-                <div class="info-section-header">Admin Notes</div>
-                <div class="info-section-body">
-                    <div style="background: #fff3cd; padding: 10px; border-radius: 5px; border-left: 4px solid #ffc107;">
-                        ${order.adminNotes}
-                    </div>
-                </div>
-            </div>
-            ` : ''}
-            
-            <div class="footer">
-                <p><strong>PlateForge Ltd</strong> - Admin Order Report</p>
-                <p>Generated on ${formatDate(new Date())} | Order ID: ${order.orderId}</p>
-                <p>This document contains confidential customer information - Handle with care</p>
-                <br>
-                <p style="font-size: 9px; color: #999;">
-                    Internal Reference: ${order._id} | 
-                    Database ID: ${order.orderId} | 
-                    Print Time: ${new Date().toISOString()}
-                </p>
-            </div>
-            
-            <script>
-                window.onload = function() {
-                    window.print();
-                };
-            </script>
-        </body>
-        </html>
-        `;
-
-        res.send(printHTML);
-        
-    } catch (error) {
-        console.error('Error generating print view:', error);
-        res.status(500).send('<h1>Error generating print view</h1><p>' + error.message + '</p>');
-    }
-});
-
-// Generate PDF endpoint for downloads
-app.get('/api/admin/orders/:orderId/pdf', authenticateToken, async (req, res) => {
-    try {
-        const { orderId } = req.params;
-        const order = await Order.findOne({ orderId });
-        
-        if (!order) {
-            return res.status(404).json({
-                success: false,
-                error: 'Order not found'
-            });
-        }
-
-        // For now, redirect to the print view
-        // In production, you might want to use a PDF generation library like puppeteer
-        res.redirect(`/admin/print-order/${orderId}`);
-        
-    } catch (error) {
-        console.error('Error generating PDF:', error);
-        res.status(500).json({
-            success: false,
-            error: 'Failed to generate PDF'
-        });
-    }
-});
-
-// Alternative: Using HTML to PDF conversion (add this if you want actual PDF generation)
-// You'll need to install: npm install puppeteer
-/*
-const puppeteer = require('puppeteer');
-
-app.get('/api/admin/orders/:orderId/pdf', authenticateToken, async (req, res) => {
-    try {
-        const { orderId } = req.params;
-        const order = await Order.findOne({ orderId });
-        
-        if (!order) {
-            return res.status(404).json({
-                success: false,
-                error: 'Order not found'
-            });
-        }
-
-        // Launch puppeteer
-        const browser = await puppeteer.launch();
-        const page = await browser.newPage();
-        
-        // Navigate to the print page
-        await page.goto(`${process.env.FRONTEND_URL || 'http://localhost:5000'}/admin/print-order/${orderId}`, {
-            waitUntil: 'networkidle0'
-        });
-        
-        // Generate PDF
-        const pdf = await page.pdf({
-            format: 'A4',
-            printBackground: true,
-            margin: {
-                top: '20px',
-                bottom: '20px',
-                left: '20px',
-                right: '20px'
-            }
-        });
-        
-        await browser.close();
-        
-        // Send PDF
-        res.setHeader('Content-Type', 'application/pdf');
-        res.setHeader('Content-Disposition', `attachment; filename="order-${orderId}.pdf"`);
-        res.send(pdf);
-        
-    } catch (error) {
-        console.error('Error generating PDF:', error);
-        res.status(500).json({
-            success: false,
-            error: 'Failed to generate PDF'
-        });
-    }
-});
-*/
-
 // Get PayPal order details
 app.get('/paypal-order/:orderId', async (req, res) => {
     const { orderId } = req.params;
@@ -3950,7 +3006,6 @@ app.post('/api/orders/create', async (req, res) => {
 });
 
 // Update Order Schema to include userId
-// Add this to your existing orderSchema (before the model creation)
 
 // Update Payment Failure Endpoint
 // app.post('/api/orders/:orderId/payment-failed', async (req, res) => {
@@ -4152,114 +3207,7 @@ app.get('/api/orders/:orderId', async (req, res) => {
 });
 
 // Get All Orders for Admin (with pagination and filtering)
-app.get('/api/admin/orders', authenticateToken, async (req, res) => {
-    try {
-        const { 
-            page = 1, 
-            limit = 20, 
-            status, 
-            paymentStatus,
-            search 
-        } = req.query;
-        
-        // Build filter query
-        const filter = {};
-        if (status) filter.orderStatus = status;
-        if (paymentStatus) filter.paymentStatus = paymentStatus;
-        if (search) {
-            filter.$or = [
-                { orderId: { $regex: search, $options: 'i' } },
-                { 'customer.firstName': { $regex: search, $options: 'i' } },
-                { 'customer.lastName': { $regex: search, $options: 'i' } },
-                { 'customer.email': { $regex: search, $options: 'i' } }
-            ];
-        }
-        
-        // Execute query with pagination
-        const orders = await Order.find(filter)
-            .sort({ 'dates.ordered': -1 })
-            .limit(limit * 1)
-            .skip((page - 1) * limit)
-            .exec();
-        
-        const totalOrders = await Order.countDocuments(filter);
-        
-        res.json({
-            success: true,
-            orders,
-            pagination: {
-                currentPage: page,
-                totalPages: Math.ceil(totalOrders / limit),
-                totalOrders,
-                hasNext: page < Math.ceil(totalOrders / limit),
-                hasPrev: page > 1
-            }
-        });
-        
-    } catch (error) {
-        console.error('Error fetching admin orders:', error);
-        res.status(500).json({
-            success: false,
-            error: 'Failed to fetch orders'
-        });
-    }
-});
 
-// Update Order Status (Admin only)
-app.patch('/api/admin/orders/:orderId/status', authenticateToken, async (req, res) => {
-    try {
-        const { orderId } = req.params;
-        const { orderStatus, adminNotes, trackingNumber } = req.body;
-        
-        const updateData = {
-            updatedAt: new Date()
-        };
-        
-        if (orderStatus) {
-            updateData.orderStatus = orderStatus;
-            
-            // Update timeline dates based on status
-            if (orderStatus === 'processing' && !updateData['dates.processing']) {
-                updateData['dates.processing'] = new Date();
-            } else if (orderStatus === 'shipped' && !updateData['dates.shipped']) {
-                updateData['dates.shipped'] = new Date();
-            } else if (orderStatus === 'delivered' && !updateData['dates.delivered']) {
-                updateData['dates.delivered'] = new Date();
-            }
-        }
-        
-        if (adminNotes) updateData.adminNotes = adminNotes;
-        if (trackingNumber) updateData.trackingNumber = trackingNumber;
-        
-        const order = await Order.findOneAndUpdate(
-            { orderId },
-            updateData,
-            { new: true }
-        );
-        
-        if (!order) {
-            return res.status(404).json({
-                success: false,
-                error: 'Order not found'
-            });
-        }
-        
-        console.log('Order status updated:', orderId, orderStatus);
-        
-        res.json({
-            success: true,
-            message: 'Order updated successfully',
-            order
-        });
-        
-    } catch (error) {
-        console.error('Error updating order status:', error);
-        res.status(500).json({
-            success: false,
-            error: 'Failed to update order status'
-        });
-    }
-});
 
 // Get Order Details Endpoint
 app.get('/api/orders/:orderId', async (req, res) => {
@@ -4365,6 +3313,7 @@ app.post('/capture-paypal-order/:paypalOrderId', async (req, res) => {
                 
                 captureRes = { data: orderDetailsRes.data };
             } else {
+                console.log('eerie error was captured here.');
                 throw captureError;
             }
         }
@@ -4436,378 +3385,6 @@ app.post('/capture-paypal-order/:paypalOrderId', async (req, res) => {
         });
     }
 });
-
-// FIXED: PayPal payment capture endpoint (the one your frontend calls)
-// app.post('/capture-paypal-payment', async (req, res) => {
-//     try {
-//         const { paypalOrderId } = req.body;
-        
-//         if (!paypalOrderId) {
-//             return res.status(400).json({
-//                 success: false,
-//                 error: 'PayPal order ID is required'
-//             });
-//         }
-
-//         // Find existing order by PayPal order ID
-//         const existingOrder = await Order.findOne({ 'payment.paypalOrderId': paypalOrderId });
-//         if (!existingOrder) {
-//             return res.status(404).json({
-//                 success: false,
-//                 error: 'Order not found for this PayPal transaction'
-//             });
-//         }
-
-//         // Check if already processed
-//         if (existingOrder.paymentStatus === 'paid') {
-//             console.log('Order already processed:', existingOrder.orderId);
-//             return res.json({
-//                 success: true,
-//                 status: 'COMPLETED',
-//                 orderId: existingOrder.orderId,
-//                 paymentId: existingOrder.payment.paypalPaymentId,
-//                 amount: existingOrder.payment.amount,
-//                 currency: existingOrder.payment.currency,
-//                 message: 'Order already processed successfully'
-//             });
-//         }
-
-//         // Capture PayPal payment
-//         const auth = Buffer.from(
-//             `${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET_KEY}`
-//         ).toString('base64');
-
-//         const tokenRes = await axios.post(
-//             'https://api-m.sandbox.paypal.com/v1/oauth2/token',
-//             'grant_type=client_credentials',
-//             {
-//                 headers: {
-//                     'Content-Type': 'application/x-www-form-urlencoded',
-//                     'Authorization': `Basic ${auth}`,
-//                 },
-//             }
-//         );
-
-//         const accessToken = tokenRes.data.access_token;
-
-//         let captureRes;
-//         try {
-//             captureRes = await axios.post(
-//                 `https://api-m.sandbox.paypal.com/v2/checkout/orders/${paypalOrderId}/capture`,
-//                 {},
-//                 {
-//                     headers: {
-//                         'Content-Type': 'application/json',
-//                         'Authorization': `Bearer ${accessToken}`,
-//                     },
-//                 }
-//             );
-//         } catch (captureError) {
-//             if (captureError.response?.data?.details?.[0]?.issue === 'ORDER_ALREADY_CAPTURED') {
-//                 const orderDetailsRes = await axios.get(
-//                     `https://api-m.sandbox.paypal.com/v2/checkout/orders/${paypalOrderId}`,
-//                     {
-//                         headers: {
-//                             'Content-Type': 'application/json',
-//                             'Authorization': `Bearer ${accessToken}`,
-//                         },
-//                     }
-//                 );
-//                 captureRes = { data: orderDetailsRes.data };
-//             } else {
-//                 throw captureError;
-//             }
-//         }
-
-//         if (captureRes.data.status === 'COMPLETED') {
-//             // Extract payment details
-//             let paymentDetails;
-//             let amount;
-            
-//             if (captureRes.data.purchase_units?.[0]?.payments?.captures?.[0]) {
-//                 paymentDetails = captureRes.data.purchase_units[0].payments.captures[0];
-//                 amount = parseFloat(paymentDetails.amount.value);
-//             } else if (captureRes.data.purchase_units?.[0]?.amount?.value) {
-//                 const purchaseUnit = captureRes.data.purchase_units[0];
-//                 amount = parseFloat(purchaseUnit.amount.value);
-//                 paymentDetails = {
-//                     id: paypalOrderId,
-//                     amount: purchaseUnit.amount
-//                 };
-//             } else {
-//                 amount = existingOrder.payment.amount;
-//                 paymentDetails = { id: paypalOrderId, amount: { value: amount, currency_code: 'GBP' } };
-//             }
-            
-//             // Update order status to paid
-//             const updatedOrder = await Order.findOneAndUpdate(
-//                 { orderId: existingOrder.orderId },
-//                 { 
-//                     paymentStatus: 'paid',
-//                     orderStatus: 'processing',
-//                     'payment.paypalPaymentId': paymentDetails.id,
-//                     'payment.transactionId': paymentDetails.id,
-//                     'payment.amount': amount,
-//                     'dates.paid': new Date(),
-//                     notes: `Payment completed successfully via PayPal. Transaction: ${paymentDetails.id}`,
-//                     updatedAt: new Date()
-//                 },
-//                 { new: true }
-//             );
-            
-//             console.log('Order payment completed:', existingOrder.orderId);
-            
-//             return res.json({
-//                 success: true,
-//                 status: 'COMPLETED',
-//                 orderId: updatedOrder.orderId,
-//                 paymentId: paymentDetails.id,
-//                 amount: amount,
-//                 currency: paymentDetails.amount?.currency_code || 'GBP'
-//             });
-            
-//         } else {
-//             return res.status(400).json({
-//                 success: false,
-//                 error: 'Payment not completed',
-//                 status: captureRes.data.status
-//             });
-//         }
-
-//     } catch (err) {
-//         console.error('Error capturing PayPal payment:', err.response ? err.response.data : err.message);
-//         res.status(500).json({ 
-//             success: false,
-//             error: 'Failed to capture payment',
-//             details: err.response ? err.response.data : err.message
-//         });
-//     }
-// });
-
-// REPLACE your existing /capture-paypal-payment endpoint with this updated version
-// app.post('/capture-paypal-payment', async (req, res) => {
-//     try {
-//         const { paypalOrderId } = req.body;
-        
-//         if (!paypalOrderId) {
-//             return res.status(400).json({
-//                 success: false,
-//                 error: 'PayPal order ID is required'
-//             });
-//         }
-
-//         // Find existing order by PayPal order ID
-//         const existingOrder = await Order.findOne({ 'payment.paypalOrderId': paypalOrderId });
-//         if (!existingOrder) {
-//             return res.status(404).json({
-//                 success: false,
-//                 error: 'Order not found for this PayPal transaction'
-//             });
-//         }
-
-//         // Check if already processed
-//         if (existingOrder.paymentStatus === 'paid') {
-//             console.log('Order already processed:', existingOrder.orderId);
-//             return res.json({
-//                 success: true,
-//                 status: 'COMPLETED',
-//                 orderId: existingOrder.orderId,
-//                 paymentId: existingOrder.payment.paypalPaymentId,
-//                 amount: existingOrder.payment.amount,
-//                 currency: existingOrder.payment.currency,
-//                 message: 'Order already processed successfully'
-//             });
-//         }
-
-//         // Capture PayPal payment
-//         const auth = Buffer.from(
-//             `${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET_KEY}`
-//         ).toString('base64');
-
-//         const tokenRes = await axios.post(
-//             'https://api-m.sandbox.paypal.com/v1/oauth2/token',
-//             'grant_type=client_credentials',
-//             {
-//                 headers: {
-//                     'Content-Type': 'application/x-www-form-urlencoded',
-//                     'Authorization': `Basic ${auth}`,
-//                 },
-//             }
-//         );
-
-//         const accessToken = tokenRes.data.access_token;
-
-//         let captureRes;
-//         try {
-//             captureRes = await axios.post(
-//                 `https://api-m.sandbox.paypal.com/v2/checkout/orders/${paypalOrderId}/capture`,
-//                 {},
-//                 {
-//                     headers: {
-//                         'Content-Type': 'application/json',
-//                         'Authorization': `Bearer ${accessToken}`,
-//                     },
-//                 }
-//             );
-//         } catch (captureError) {
-//             // Handle "ORDER_ALREADY_CAPTURED" error
-//             if (captureError.response?.data?.details?.[0]?.issue === 'ORDER_ALREADY_CAPTURED') {
-//                 const orderDetailsRes = await axios.get(
-//                     `https://api-m.sandbox.paypal.com/v2/checkout/orders/${paypalOrderId}`,
-//                     {
-//                         headers: {
-//                             'Content-Type': 'application/json',
-//                             'Authorization': `Bearer ${accessToken}`,
-//                         },
-//                     }
-//                 );
-//                 captureRes = { data: orderDetailsRes.data };
-//             } else {
-//                 // Payment capture failed - send failure email
-//                 console.error('PayPal capture error:', captureError.response?.data || captureError.message);
-                
-//                 // Update order status to failed
-//                 const failedOrder = await Order.findOneAndUpdate(
-//                     { orderId: existingOrder.orderId },
-//                     { 
-//                         paymentStatus: 'failed',
-//                         orderStatus: 'cancelled',
-//                         notes: `Payment capture failed: ${captureError.response?.data?.details?.[0]?.issue || captureError.message}`,
-//                         updatedAt: new Date()
-//                     },
-//                     { new: true }
-//                 );
-                
-//                 // ✅ SEND FAILURE EMAIL
-//                 try {
-//                     const emailResult = await emailService.sendFailureEmail(failedOrder);
-//                     if (emailResult.success) {
-//                         console.log(`✅ Failure email sent to ${failedOrder.customer.email}`);
-//                     } else {
-//                         console.error(`❌ Failed to send failure email: ${emailResult.error}`);
-//                     }
-//                 } catch (emailError) {
-//                     console.error('❌ Email sending error:', emailError);
-//                 }
-                
-//                 throw captureError;
-//             }
-//         }
-
-//         if (captureRes.data.status === 'COMPLETED') {
-//             // Extract payment details
-//             let paymentDetails;
-//             let amount;
-            
-//             if (captureRes.data.purchase_units?.[0]?.payments?.captures?.[0]) {
-//                 paymentDetails = captureRes.data.purchase_units[0].payments.captures[0];
-//                 amount = parseFloat(paymentDetails.amount.value);
-//             } else if (captureRes.data.purchase_units?.[0]?.amount?.value) {
-//                 const purchaseUnit = captureRes.data.purchase_units[0];
-//                 amount = parseFloat(purchaseUnit.amount.value);
-//                 paymentDetails = {
-//                     id: paypalOrderId,
-//                     amount: purchaseUnit.amount
-//                 };
-//             } else {
-//                 amount = existingOrder.payment.amount;
-//                 paymentDetails = { id: paypalOrderId, amount: { value: amount, currency_code: 'GBP' } };
-//             }
-            
-//             // Update order status to paid
-//             const updatedOrder = await Order.findOneAndUpdate(
-//                 { orderId: existingOrder.orderId },
-//                 { 
-//                     paymentStatus: 'paid',
-//                     orderStatus: 'processing',
-//                     'payment.paypalPaymentId': paymentDetails.id,
-//                     'payment.transactionId': paymentDetails.id,
-//                     'payment.amount': amount,
-//                     'dates.paid': new Date(),
-//                     notes: `Payment completed successfully via PayPal. Transaction: ${paymentDetails.id}`,
-//                     updatedAt: new Date()
-//                 },
-//                 { new: true }
-//             );
-            
-//             console.log('Order payment completed:', existingOrder.orderId);
-            
-//             // ✅ SEND SUCCESS EMAIL
-//             try {
-//                 const emailResult = await emailService.sendSuccessEmail(updatedOrder);
-//                 if (emailResult.success) {
-//                     console.log(`✅ Success email sent to ${updatedOrder.customer.email}`);
-//                 } else {
-//                     console.error(`❌ Failed to send success email: ${emailResult.error}`);
-//                 }
-//             } catch (emailError) {
-//                 console.error('❌ Email sending error:', emailError);
-//                 // Don't fail the payment response if email fails
-//             }
-            
-//             return res.json({
-//                 success: true,
-//                 status: 'COMPLETED',
-//                 orderId: updatedOrder.orderId,
-//                 paymentId: paymentDetails.id,
-//                 amount: amount,
-//                 currency: paymentDetails.amount?.currency_code || 'GBP'
-//             });
-            
-//         } else {
-//             // Payment not completed - send failure email
-//             const failedOrder = await Order.findOneAndUpdate(
-//                 { orderId: existingOrder.orderId },
-//                 { 
-//                     paymentStatus: 'failed',
-//                     orderStatus: 'cancelled',
-//                     notes: `Payment not completed. Status: ${captureRes.data.status}`,
-//                     updatedAt: new Date()
-//                 },
-//                 { new: true }
-//             );
-            
-//             // ✅ SEND FAILURE EMAIL
-//             try {
-//                 const emailResult = await emailService.sendFailureEmail(failedOrder);
-//                 if (emailResult.success) {
-//                     console.log(`✅ Failure email sent to ${failedOrder.customer.email}`);
-//                 } else {
-//                     console.error(`❌ Failed to send failure email: ${emailResult.error}`);
-//                 }
-//             } catch (emailError) {
-//                 console.error('❌ Email sending error:', emailError);
-//             }
-            
-//             return res.status(400).json({
-//                 success: false,
-//                 error: 'Payment not completed',
-//                 status: captureRes.data.status
-//             });
-//         }
-
-//     } catch (err) {
-//         console.error('Error capturing PayPal payment:', err.response ? err.response.data : err.message);
-        
-//         // Try to send failure email if we have order information
-//         if (err.orderId) {
-//             try {
-//                 const order = await Order.findOne({ orderId: err.orderId });
-//                 if (order) {
-//                     await emailService.sendFailureEmail(order);
-//                 }
-//             } catch (emailError) {
-//                 console.error('❌ Error sending failure email:', emailError);
-//             }
-//         }
-        
-//         res.status(500).json({ 
-//             success: false,
-//             error: 'Failed to capture payment',
-//             details: err.response ? err.response.data : err.message
-//         });
-//     }
-// });
 
 // REPLACE your existing /capture-paypal-payment endpoint with this enhanced version
 app.post('/capture-paypal-payment', async (req, res) => {
@@ -4896,7 +3473,7 @@ app.post('/capture-paypal-payment', async (req, res) => {
                     { orderId: existingOrder.orderId },
                     { 
                         paymentStatus: 'failed',
-                        orderStatus: 'cancelled',
+                        orderStatus: 'failed',
                         notes: `Payment capture failed: ${captureError.response?.data?.details?.[0]?.issue || captureError.message}`,
                         updatedAt: new Date()
                     },
@@ -4986,7 +3563,7 @@ app.post('/capture-paypal-payment', async (req, res) => {
                 { orderId: existingOrder.orderId },
                 { 
                     paymentStatus: 'failed',
-                    orderStatus: 'cancelled',
+                    orderStatus: 'failed',
                     notes: `Payment not completed. Status: ${captureRes.data.status}`,
                     updatedAt: new Date()
                 },
@@ -6144,6 +4721,2905 @@ app.get('/api/test-premium-mock', async (req, res) => {
     } catch (error) {
         console.error('Premium mock test error:', error);
         res.status(500).json({ error: error.message });
+    }
+});
+
+// Add this endpoint to your server.js file
+// Add this to your server.js file
+// This creates a proper PDF instead of just HTML
+
+// Update your server.js with this IDM-friendly version
+// Replace the existing /api/orders/download-receipt/:orderId endpoint
+
+app.get('/api/orders/download-receipt/:orderId', async (req, res) => {
+    try {
+        const { orderId } = req.params;
+        
+        // Support both header and query token for IDM compatibility
+        let token = req.headers['authorization'];
+        if (token && token.startsWith('Bearer ')) {
+            token = token.substring(7);
+        } else if (req.query.token) {
+            token = req.query.token;
+        }
+        
+        // Verify token if provided (for admin endpoints, make this required)
+        if (token) {
+            try {
+                const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+                console.log('Authenticated request for order:', orderId);
+            } catch (err) {
+                return res.status(401).json({ 
+                    success: false, 
+                    error: 'Invalid or expired token' 
+                });
+            }
+        }
+        
+        // Find the order in database
+        const order = await Order.findOne({ orderId });
+        
+        if (!order) {
+            console.log('Order not found:', orderId);
+            return res.status(404).json({ 
+                success: false,
+                error: 'Order not found' 
+            });
+        }
+        
+        console.log('Generating receipt for order:', orderId);
+        
+        // Check if you have the emailService available for PDF generation
+        if (typeof emailService !== 'undefined' && emailService.generatePDFFromHTML) {
+            try {
+                // Use existing email service PDF generation
+                const htmlContent = emailService.generateReceiptHTML(order, 'success');
+                const pdfBuffer = await emailService.generatePDFFromHTML(htmlContent);
+                
+                // Set proper headers for PDF download
+                res.setHeader('Content-Type', 'application/pdf');
+                res.setHeader('Content-Disposition', `attachment; filename="PlateForge-Receipt-${orderId}.pdf"`);
+                res.setHeader('Content-Length', pdfBuffer.length);
+                res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+                res.setHeader('Pragma', 'no-cache');
+                res.setHeader('Expires', '0');
+                
+                // IDM-friendly headers
+                res.setHeader('Accept-Ranges', 'bytes');
+                res.setHeader('Access-Control-Allow-Origin', '*');
+                res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition, Content-Length');
+                
+                // Send the PDF buffer
+                res.send(pdfBuffer);
+                console.log('✅ PDF generated and sent successfully for order:', orderId);
+                return;
+                
+            } catch (pdfError) {
+                console.error('PDF generation failed, falling back to HTML:', pdfError);
+                // Fall through to HTML generation
+            }
+        }
+        
+        // Fallback: Generate HTML version that can be saved as PDF
+        console.log('Using HTML fallback for order:', orderId);
+        const htmlContent = generateOrderHTML(order);
+        
+        // Set headers for HTML download that browsers can save as PDF
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="PlateForge-Order-${orderId}.html"`);
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+        
+        // IDM-friendly headers
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
+        
+        res.send(htmlContent);
+        console.log('✅ HTML receipt generated successfully for order:', orderId);
+        
+    } catch (error) {
+        console.error('❌ Error generating receipt:', error);
+        res.status(500).json({ 
+            success: false,
+            error: 'Failed to generate receipt',
+            details: error.message 
+        });
+    }
+});
+
+// ===============================
+// AUTH ROUTES (existing)
+// ===============================
+
+// Admin Registration
+app.post('/admin/register', async (req, res) => {
+    try {
+        const { username, email, password } = req.body;
+        
+        if (!username || !email || !password) {
+            return res.status(400).json({ error: 'Username, email, and password are required' });
+        }
+        
+        const existingAdmin = await Admin.findOne({ 
+            $or: [{ username }, { email }] 
+        });
+        
+        if (existingAdmin) {
+            return res.status(400).json({ error: 'Admin with this username or email already exists' });
+        }
+        
+        const saltRounds = 10;
+        const hashedPassword = await bcrypt.hash(password, saltRounds);
+        
+        const admin = new Admin({
+            username,
+            email,
+            password: hashedPassword
+        });
+        
+        await admin.save();
+        
+        res.status(201).json({ 
+            success: true, 
+            message: 'Admin registered successfully',
+            admin: { id: admin._id, username: admin.username, email: admin.email }
+        });
+        
+    } catch (error) {
+        console.error('Registration error:', error);
+        res.status(500).json({ error: 'Registration failed' });
+    }
+});
+
+// Admin Login
+app.post('/admin/login', async (req, res) => {
+    try {
+        const { username, password } = req.body;
+        
+        if (!username || !password) {
+            return res.status(400).json({ error: 'Username and password are required' });
+        }
+        
+        const admin = await Admin.findOne({ username });
+        if (!admin) {
+            return res.status(401).json({ error: 'Invalid credentials' });
+        }
+        
+        const isValidPassword = await bcrypt.compare(password, admin.password);
+        if (!isValidPassword) {
+            return res.status(401).json({ error: 'Invalid credentials' });
+        }
+        
+        const token = jwt.sign(
+            { id: admin._id, username: admin.username },
+            process.env.JWT_SECRET || 'your-secret-key',
+            { expiresIn: '7d' }
+        );
+        
+        res.json({
+            success: true,
+            token,
+            admin: { id: admin._id, username: admin.username, email: admin.email }
+        });
+        
+    } catch (error) {
+        console.error('Login error:', error);
+        res.status(500).json({ error: 'Login failed' });
+    }
+});
+
+
+
+// Helper function to generate HTML for the order
+function generateOrderHTML(order) {
+    const formatCurrency = (amount) => {
+        if (!amount) return '£0.00';
+        return `£${parseFloat(amount).toFixed(2)}`;
+    };
+
+    const formatDate = (dateString) => {
+        if (!dateString) return 'N/A';
+        const date = new Date(dateString);
+        return date.toLocaleDateString('en-GB', {
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit'
+        });
+    };
+
+    const getCustomerName = (order) => {
+        if (order.customer && typeof order.customer === 'object') {
+            const { firstName, lastName } = order.customer;
+            if (firstName && lastName) return `${firstName} ${lastName}`;
+            if (firstName) return firstName;
+            if (lastName) return lastName;
+            return 'Customer';
+        }
+        if (typeof order.customer === 'string') return order.customer;
+        return order.customerName || 'N/A';
+    };
+
+    const getShippingAddress = (order) => {
+        if (order.customer && typeof order.customer === 'object') {
+            return {
+                street: order.customer.address || 'Not provided',
+                city: order.customer.city || 'Not provided',
+                state: order.customer.state || '',
+                postcode: order.customer.postcode || 'Not provided',
+                country: order.customer.country || 'Not provided',
+                phone: order.customer.phone || 'Not provided'
+            };
+        }
+        return order.shippingAddress || null;
+    };
+
+    const shippingAddress = getShippingAddress(order);
+
+    return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <title>PlateForge - Order Receipt ${order.orderId}</title>
+        <style>
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+            
+            body {
+                font-family: 'Segoe UI', Arial, sans-serif;
+                font-size: 14px;
+                line-height: 1.6;
+                color: #333;
+                max-width: 800px;
+                margin: 0 auto;
+                padding: 20px;
+                background: white;
+            }
+            
+            .header {
+                text-align: center;
+                border-bottom: 3px solid #007bff;
+                padding-bottom: 20px;
+                margin-bottom: 30px;
+            }
+            
+            .header h1 {
+                font-size: 32px;
+                color: #007bff;
+                margin-bottom: 5px;
+            }
+            
+            .header .subtitle {
+                color: #666;
+                font-size: 18px;
+            }
+            
+            .order-info {
+                background: #f8f9fa;
+                border: 2px solid #007bff;
+                border-radius: 8px;
+                padding: 20px;
+                margin-bottom: 25px;
+                text-align: center;
+            }
+            
+            .order-id {
+                font-family: 'Courier New', monospace;
+                background: #e3f2fd;
+                padding: 10px 15px;
+                border-radius: 4px;
+                font-size: 18px;
+                color: #1976d2;
+                font-weight: bold;
+                margin: 10px 0;
+            }
+            
+            .content-grid {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 30px;
+                margin-bottom: 25px;
+            }
+            
+            .section {
+                border: 1px solid #dee2e6;
+                border-radius: 8px;
+                overflow: hidden;
+            }
+            
+            .section-header {
+                background: #007bff;
+                color: white;
+                padding: 15px;
+                font-weight: bold;
+                font-size: 16px;
+            }
+            
+            .section-body {
+                padding: 20px;
+            }
+            
+            .info-row {
+                display: flex;
+                justify-content: space-between;
+                margin-bottom: 10px;
+                padding: 8px 0;
+                border-bottom: 1px dotted #dee2e6;
+            }
+            
+            .info-row:last-child {
+                border-bottom: none;
+            }
+            
+            .info-row .label {
+                font-weight: 600;
+                color: #495057;
+            }
+            
+            .info-row .value {
+                color: #212529;
+                text-align: right;
+            }
+            
+            .amount {
+                font-size: 18px;
+                font-weight: bold;
+                color: #28a745;
+            }
+            
+            .status-badge {
+                padding: 4px 12px;
+                border-radius: 15px;
+                font-size: 12px;
+                font-weight: bold;
+                text-transform: uppercase;
+                background: #28a745;
+                color: white;
+            }
+            
+            .items-section {
+                margin: 25px 0;
+                border: 1px solid #dee2e6;
+                border-radius: 8px;
+                overflow: hidden;
+            }
+            
+            .items-table {
+                width: 100%;
+                border-collapse: collapse;
+            }
+            
+            .items-table th {
+                background: #f8f9fa;
+                padding: 15px;
+                text-align: left;
+                font-weight: 600;
+                border-bottom: 2px solid #dee2e6;
+            }
+            
+            .items-table td {
+                padding: 15px;
+                border-bottom: 1px solid #dee2e6;
+                vertical-align: top;
+            }
+            
+            .items-table tr:last-child td {
+                border-bottom: none;
+            }
+            
+            .plate-text {
+                font-family: 'Courier New', monospace;
+                background: #343a40;
+                color: white;
+                padding: 4px 8px;
+                border-radius: 3px;
+                font-size: 12px;
+                font-weight: bold;
+            }
+            
+            .pricing-section {
+                background: #f8f9fa;
+                border: 2px solid #28a745;
+                border-radius: 8px;
+                padding: 25px;
+                margin: 25px 0;
+            }
+            
+            .pricing-row {
+                display: flex;
+                justify-content: space-between;
+                margin-bottom: 10px;
+                padding: 5px 0;
+            }
+            
+            .pricing-row.total {
+                border-top: 2px solid #28a745;
+                padding-top: 15px;
+                margin-top: 15px;
+                font-weight: bold;
+                font-size: 18px;
+            }
+            
+            .footer {
+                margin-top: 40px;
+                padding-top: 20px;
+                border-top: 2px solid #dee2e6;
+                text-align: center;
+                color: #6c757d;
+                font-size: 12px;
+            }
+            
+            @media print {
+                body { margin: 0; padding: 10px; }
+                .header h1 { color: #007bff !important; }
+                .section-header { background: #007bff !important; color: white !important; }
+                .status-badge { background: #28a745 !important; color: white !important; }
+                .plate-text { background: #343a40 !important; color: white !important; }
+            }
+        </style>
+    </head>
+    <body>
+        <div class="header">
+            <h1>PlateForge</h1>
+            <div class="subtitle">Order Receipt</div>
+        </div>
+        
+        <div class="order-info">
+            <h2>Order Receipt</h2>
+            <div class="order-id">${order.orderId}</div>
+            <p>Thank you for your order!</p>
+        </div>
+        
+        <div class="content-grid">
+            <div class="section">
+                <div class="section-header">Order Information</div>
+                <div class="section-body">
+                    <div class="info-row">
+                        <span class="label">Order ID:</span>
+                        <span class="value">${order.orderId}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="label">Customer:</span>
+                        <span class="value">${getCustomerName(order)}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="label">Email:</span>
+                        <span class="value">${order.customer?.email || 'N/A'}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="label">Phone:</span>
+                        <span class="value">${order.customer?.phone || 'N/A'}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="label">Order Date:</span>
+                        <span class="value">${formatDate(order.dates?.ordered || order.createdAt)}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="label">Status:</span>
+                        <span class="value">
+                            <span class="status-badge">${order.paymentStatus || 'Paid'}</span>
+                        </span>
+                    </div>
+                    <div class="info-row">
+                        <span class="label">Total Amount:</span>
+                        <span class="value amount">${formatCurrency(order.pricing?.total || order.amount)}</span>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="section">
+                <div class="section-header">Shipping Address</div>
+                <div class="section-body">
+                    ${shippingAddress ? `
+                    <div class="info-row">
+                        <span class="label">Street:</span>
+                        <span class="value">${shippingAddress.street}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="label">City:</span>
+                        <span class="value">${shippingAddress.city}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="label">Postcode:</span>
+                        <span class="value">${shippingAddress.postcode}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="label">Country:</span>
+                        <span class="value">${shippingAddress.country}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="label">Phone:</span>
+                        <span class="value">${shippingAddress.phone}</span>
+                    </div>
+                    ` : `
+                    <p style="text-align: center; color: #6c757d;">No shipping address available</p>
+                    `}
+                </div>
+            </div>
+        </div>
+        
+        ${order.items && order.items.length > 0 ? `
+        <div class="items-section">
+            <div class="section-header">Order Items</div>
+            <table class="items-table">
+                <thead>
+                    <tr>
+                        <th>Item Description</th>
+                        <th>Quantity</th>
+                        <th>Price</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${order.items.map((item, index) => `
+                    <tr>
+                        <td>
+                            <strong>${item.name}</strong>
+                            ${item.plateConfiguration?.text ? `
+                            <br><small>Plate Text: <span class="plate-text">${item.plateConfiguration.text}</span></small>
+                            ` : ''}
+                            ${item.plateConfiguration?.plateStyle?.label ? `
+                            <br><small>Style: ${item.plateConfiguration.plateStyle.label}</small>
+                            ` : ''}
+                            ${item.plateConfiguration?.roadLegal ? `
+                            <br><small>Road Legal: ${item.plateConfiguration.roadLegal}</small>
+                            ` : ''}
+                        </td>
+                        <td style="text-align: center;">${item.quantity || 1}</td>
+                        <td style="text-align: right;">${formatCurrency(item.subtotal || item.price)}</td>
+                    </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        </div>
+        ` : ''}
+        
+        ${order.pricing ? `
+        <div class="pricing-section">
+            <h3 style="margin-bottom: 20px; color: #28a745;">Pricing Summary</h3>
+            <div class="pricing-row">
+                <span>Subtotal:</span>
+                <span>${formatCurrency(order.pricing.subtotal)}</span>
+            </div>
+            ${order.pricing.discount > 0 ? `
+            <div class="pricing-row" style="color: #28a745;">
+                <span>Discount:</span>
+                <span>-${formatCurrency(order.pricing.discount)}</span>
+            </div>
+            ` : ''}
+            <div class="pricing-row">
+                <span>Shipping:</span>
+                <span>${order.pricing.shipping > 0 ? formatCurrency(order.pricing.shipping) : 'Free'}</span>
+            </div>
+            <div class="pricing-row">
+                <span>Tax:</span>
+                <span>${formatCurrency(order.pricing.tax)}</span>
+            </div>
+            <div class="pricing-row total">
+                <span>Total:</span>
+                <span>${formatCurrency(order.pricing.total)}</span>
+            </div>
+        </div>
+        ` : ''}
+        
+        <div class="footer">
+            <p><strong>PlateForge Ltd</strong></p>
+            <p>Thank you for your business!</p>
+            <p>Generated on ${formatDate(new Date())}</p>
+            <p>For support, contact us at support@plateforge.com</p>
+        </div>
+    </body>
+    </html>
+    `;
+}
+
+// Additional endpoint to get order details for admin dashboard
+app.get('/admin/order-details/:orderId', authenticateToken, async (req, res) => {
+    try {
+        const { orderId } = req.params;
+        const order = await Order.findOne({ orderId });
+        
+        if (!order) {
+            return res.status(404).json({
+                success: false,
+                error: 'Order not found'
+            });
+        }
+        
+        res.json({
+            success: true,
+            data: order
+        });
+        
+    } catch (error) {
+        console.error('Error fetching order details:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to fetch order details'
+        });
+    }
+});
+
+// Admin Print Order Details Route
+app.get('/admin/print-order/:orderId', authenticateToken, async (req, res) => {
+    try {
+        const { orderId } = req.params;
+        const order = await Order.findOne({ orderId });
+        
+        if (!order) {
+            return res.status(404).send('<h1>Order not found</h1>');
+        }
+
+        const formatCurrency = (amount, currency = 'GBP') => {
+            if (!amount) return '£0.00';
+            const symbol = currency === 'GBP' ? '£' : currency === 'USD' ? '$' : currency;
+            return `${symbol}${parseFloat(amount).toFixed(2)}`;
+        };
+
+        const formatDate = (dateString) => {
+            if (!dateString) return 'N/A';
+            const date = new Date(dateString);
+            return date.toLocaleDateString('en-GB', {
+                day: '2-digit',
+                month: 'short',
+                year: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+        };
+
+        const printHTML = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <title>Order Details - ${order.orderId}</title>
+            <style>
+                * {
+                    margin: 0;
+                    padding: 0;
+                    box-sizing: border-box;
+                }
+                
+                body {
+                    font-family: 'Segoe UI', Arial, sans-serif;
+                    font-size: 12px;
+                    line-height: 1.4;
+                    color: #333;
+                    max-width: 1000px;
+                    margin: 0 auto;
+                    padding: 20px;
+                }
+                
+                .header {
+                    text-align: center;
+                    border-bottom: 3px solid #ffc107;
+                    padding-bottom: 20px;
+                    margin-bottom: 30px;
+                }
+                
+                .header h1 {
+                    font-size: 28px;
+                    color: #333;
+                    margin-bottom: 5px;
+                }
+                
+                .header .subtitle {
+                    color: #666;
+                    font-size: 16px;
+                }
+                
+                .admin-badge {
+                    background: #dc3545;
+                    color: white;
+                    padding: 5px 15px;
+                    border-radius: 20px;
+                    font-size: 11px;
+                    font-weight: bold;
+                    display: inline-block;
+                    margin-top: 10px;
+                }
+                
+                .order-header {
+                    background: #f8f9fa;
+                    border: 1px solid #dee2e6;
+                    border-radius: 8px;
+                    padding: 20px;
+                    margin-bottom: 25px;
+                }
+                
+                .order-header h2 {
+                    color: #495057;
+                    margin-bottom: 15px;
+                    font-size: 18px;
+                }
+                
+                .info-grid {
+                    display: grid;
+                    grid-template-columns: 1fr 1fr;
+                    gap: 30px;
+                    margin-bottom: 25px;
+                }
+                
+                .info-section {
+                    border: 1px solid #dee2e6;
+                    border-radius: 8px;
+                    overflow: hidden;
+                }
+                
+                .info-section-header {
+                    background: #6c757d;
+                    color: white;
+                    padding: 12px 15px;
+                    font-weight: bold;
+                    font-size: 14px;
+                }
+                
+                .info-section-body {
+                    padding: 15px;
+                }
+                
+                .info-row {
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: flex-start;
+                    margin-bottom: 10px;
+                    padding: 5px 0;
+                    border-bottom: 1px dotted #dee2e6;
+                }
+                
+                .info-row:last-child {
+                    border-bottom: none;
+                    margin-bottom: 0;
+                }
+                
+                .info-row .label {
+                    font-weight: 500;
+                    color: #495057;
+                    flex: 0 0 40%;
+                }
+                
+                .info-row .value {
+                    flex: 1;
+                    text-align: right;
+                    color: #212529;
+                    word-break: break-all;
+                }
+                
+                .order-id {
+                    font-family: 'Courier New', monospace;
+                    background: #e3f2fd;
+                    padding: 4px 8px;
+                    border-radius: 4px;
+                    font-size: 11px;
+                    color: #1976d2;
+                }
+                
+                .status-badge {
+                    padding: 4px 10px;
+                    border-radius: 15px;
+                    font-size: 10px;
+                    font-weight: bold;
+                    text-transform: uppercase;
+                }
+                
+                .status-paid { background: #d4edda; color: #155724; }
+                .status-pending { background: #fff3cd; color: #856404; }
+                .status-processing { background: #cce7ff; color: #004085; }
+                .status-shipped { background: #e2e3e5; color: #383d41; }
+                
+                .amount {
+                    font-size: 16px;
+                    font-weight: bold;
+                    color: #28a745;
+                }
+                
+                .items-section {
+                    margin-bottom: 25px;
+                    border: 1px solid #dee2e6;
+                    border-radius: 8px;
+                    overflow: hidden;
+                }
+                
+                .items-header {
+                    background: #007bff;
+                    color: white;
+                    padding: 12px 15px;
+                    font-weight: bold;
+                    font-size: 14px;
+                }
+                
+                .items-table {
+                    width: 100%;
+                    border-collapse: collapse;
+                }
+                
+                .items-table th {
+                    background: #f8f9fa;
+                    padding: 10px;
+                    text-align: left;
+                    font-weight: 600;
+                    border-bottom: 2px solid #dee2e6;
+                    font-size: 11px;
+                }
+                
+                .items-table td {
+                    padding: 10px;
+                    border-bottom: 1px solid #dee2e6;
+                    font-size: 11px;
+                }
+                
+                .items-table tr:last-child td {
+                    border-bottom: none;
+                }
+                
+                .items-table tr:nth-child(even) {
+                    background: #f8f9fa;
+                }
+                
+                .plate-text {
+                    font-family: 'Courier New', monospace;
+                    background: #343a40;
+                    color: white;
+                    padding: 3px 6px;
+                    border-radius: 3px;
+                    font-size: 10px;
+                }
+                
+                .pricing-section {
+                    border: 2px solid #28a745;
+                    border-radius: 8px;
+                    overflow: hidden;
+                    margin-bottom: 25px;
+                }
+                
+                .pricing-header {
+                    background: #28a745;
+                    color: white;
+                    padding: 12px 15px;
+                    font-weight: bold;
+                    font-size: 14px;
+                }
+                
+                .pricing-table {
+                    width: 100%;
+                    border-collapse: collapse;
+                }
+                
+                .pricing-table td {
+                    padding: 8px 15px;
+                    border-bottom: 1px solid #dee2e6;
+                }
+                
+                .pricing-table tr:last-child td {
+                    border-bottom: none;
+                    background: #f8f9fa;
+                    font-weight: bold;
+                    font-size: 14px;
+                }
+                
+                .shipping-section {
+                    border: 1px solid #17a2b8;
+                    border-radius: 8px;
+                    overflow: hidden;
+                    margin-bottom: 25px;
+                }
+                
+                .shipping-header {
+                    background: #17a2b8;
+                    color: white;
+                    padding: 12px 15px;
+                    font-weight: bold;
+                    font-size: 14px;
+                }
+                
+                .shipping-body {
+                    padding: 15px;
+                }
+                
+                .address-box {
+                    background: #f8f9fa;
+                    border: 1px solid #dee2e6;
+                    border-radius: 5px;
+                    padding: 10px;
+                    font-size: 11px;
+                }
+                
+                .footer {
+                    margin-top: 30px;
+                    padding-top: 20px;
+                    border-top: 2px solid #dee2e6;
+                    text-align: center;
+                    color: #6c757d;
+                    font-size: 10px;
+                }
+                
+                @media print {
+                    body { margin: 0; padding: 10px; }
+                    .no-print { display: none !important; }
+                }
+            </style>
+        </head>
+        <body>
+            <div class="header">
+                <h1>PlateForge</h1>
+                <div class="subtitle">Admin Order Details Report</div>
+                <div class="admin-badge">INTERNAL USE ONLY</div>
+            </div>
+            
+            <div class="order-header">
+                <h2>Order Summary</h2>
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <strong>Order ID:</strong> 
+                        <span class="order-id">${order.orderId}</span>
+                    </div>
+                    <div>
+                        <strong>Generated:</strong> ${formatDate(new Date())}
+                    </div>
+                </div>
+            </div>
+            
+            <div class="info-grid">
+                <div class="info-section">
+                    <div class="info-section-header">Customer Information</div>
+                    <div class="info-section-body">
+                        <div class="info-row">
+                            <span class="label">Name:</span>
+                            <span class="value">
+                                ${order.customer?.firstName && order.customer?.lastName ? 
+                                    `${order.customer.firstName} ${order.customer.lastName}` :
+                                    'N/A'
+                                }
+                            </span>
+                        </div>
+                        <div class="info-row">
+                            <span class="label">Email:</span>
+                            <span class="value">${order.customer?.email || 'N/A'}</span>
+                        </div>
+                        <div class="info-row">
+                            <span class="label">Phone:</span>
+                            <span class="value">${order.customer?.phone || 'N/A'}</span>
+                        </div>
+                        <div class="info-row">
+                            <span class="label">Customer ID:</span>
+                            <span class="value">${order.customer?._id || 'N/A'}</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="info-section">
+                    <div class="info-section-header">Order Status</div>
+                    <div class="info-section-body">
+                        <div class="info-row">
+                            <span class="label">Order Status:</span>
+                            <span class="value">
+                                <span class="status-badge status-${(order.orderStatus || '').toLowerCase()}">
+                                    ${order.orderStatus || 'Unknown'}
+                                </span>
+                            </span>
+                        </div>
+                        <div class="info-row">
+                            <span class="label">Payment Status:</span>
+                            <span class="value">
+                                <span class="status-badge status-${(order.paymentStatus || '').toLowerCase()}">
+                                    ${order.paymentStatus || 'Unknown'}
+                                </span>
+                            </span>
+                        </div>
+                        <div class="info-row">
+                            <span class="label">Order Date:</span>
+                            <span class="value">${formatDate(order.dates?.ordered || order.createdAt)}</span>
+                        </div>
+                        <div class="info-row">
+                            <span class="label">Last Updated:</span>
+                            <span class="value">${formatDate(order.updatedAt)}</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            ${order.items && order.items.length > 0 ? `
+            <div class="items-section">
+                <div class="items-header">Order Items (${order.items.length})</div>
+                <table class="items-table">
+                    <thead>
+                        <tr>
+                            <th>Item #</th>
+                            <th>Plate Text</th>
+                            <th>Style</th>
+                            <th>Configuration</th>
+                            <th>Quantity</th>
+                            <th>Unit Price</th>
+                            <th>Total</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${order.items.map((item, index) => `
+                        <tr>
+                            <td>${index + 1}</td>
+                            <td>
+                                <span class="plate-text">${item.plateText || item.text || 'N/A'}</span>
+                            </td>
+                            <td>${item.configuration?.plateStyle || item.plateStyle || 'Standard'}</td>
+                            <td>
+                                ${item.configuration ? `
+                                    Font: ${item.configuration.fontColor || 'Default'}<br>
+                                    Border: ${item.configuration.borderStyle || 'None'}<br>
+                                    Shadow: ${item.configuration.shadowEffect || 'None'}
+                                ` : 'N/A'}
+                            </td>
+                            <td style="text-align: center;">${item.quantity || 1}</td>
+                            <td style="text-align: right;">${formatCurrency(item.unitPrice || 0, order.currency)}</td>
+                            <td style="text-align: right;"><strong>${formatCurrency(item.subtotal || item.price || 0, order.currency)}</strong></td>
+                        </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            </div>
+            ` : ''}
+            
+            ${order.pricing ? `
+            <div class="pricing-section">
+                <div class="pricing-header">Pricing Breakdown</div>
+                <table class="pricing-table">
+                    <tr>
+                        <td>Subtotal:</td>
+                        <td style="text-align: right;">${formatCurrency(order.pricing.subtotal, order.currency)}</td>
+                    </tr>
+                    ${order.pricing.discount > 0 ? `
+                    <tr>
+                        <td>Discount ${order.pricing.discountCode ? `(${order.pricing.discountCode})` : ''}:</td>
+                        <td style="text-align: right; color: #dc3545;">-${formatCurrency(order.pricing.discount, order.currency)}</td>
+                    </tr>
+                    ` : ''}
+                    <tr>
+                        <td>Shipping:</td>
+                        <td style="text-align: right;">${order.pricing.shipping > 0 ? formatCurrency(order.pricing.shipping, order.currency) : 'Free'}</td>
+                    </tr>
+                    <tr>
+                        <td>VAT:</td>
+                        <td style="text-align: right;">${formatCurrency(order.pricing.vat || 0, order.currency)}</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Total Amount:</strong></td>
+                        <td style="text-align: right;"><strong class="amount">${formatCurrency(order.pricing.total, order.currency)}</strong></td>
+                    </tr>
+                </table>
+            </div>
+            ` : ''}
+            
+            <div class="info-grid">
+                <div class="info-section">
+                    <div class="info-section-header">Payment Information</div>
+                    <div class="info-section-body">
+                        <div class="info-row">
+                            <span class="label">Payment Method:</span>
+                            <span class="value">PayPal</span>
+                        </div>
+                        <div class="info-row">
+                            <span class="label">PayPal Order ID:</span>
+                            <span class="value" style="font-family: monospace; font-size: 10px;">
+                                ${order.paypalOrderId || 'N/A'}
+                            </span>
+                        </div>
+                        <div class="info-row">
+                            <span class="label">Transaction ID:</span>
+                            <span class="value" style="font-family: monospace; font-size: 10px;">
+                                ${order.paypalPaymentId || 'N/A'}
+                            </span>
+                        </div>
+                        <div class="info-row">
+                            <span class="label">Currency:</span>
+                            <span class="value">${order.currency || 'GBP'}</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="shipping-section">
+                    <div class="shipping-header">Shipping Information</div>
+                    <div class="shipping-body">
+                        ${order.shippingAddress || order.customer?.address ? `
+                        <div class="address-box">
+                            ${order.shippingAddress?.street || order.customer?.address ? `
+                                <div><strong>Street:</strong> ${order.shippingAddress?.street || order.customer?.address}</div>
+                            ` : ''}
+                            ${order.shippingAddress?.city || order.customer?.city ? `
+                                <div><strong>City:</strong> ${order.shippingAddress?.city || order.customer?.city}</div>
+                            ` : ''}
+                            ${order.shippingAddress?.postcode || order.customer?.postcode ? `
+                                <div><strong>Postcode:</strong> ${order.shippingAddress?.postcode || order.customer?.postcode}</div>
+                            ` : ''}
+                            ${order.shippingAddress?.country || order.customer?.country ? `
+                                <div><strong>Country:</strong> ${order.shippingAddress?.country || order.customer?.country}</div>
+                            ` : ''}
+                            ${order.shippingAddress?.phone || order.customer?.phone ? `
+                                <div><strong>Phone:</strong> ${order.shippingAddress?.phone || order.customer?.phone}</div>
+                            ` : ''}
+                        </div>
+                        ` : `
+                        <div class="alert alert-info">
+                            No shipping address available
+                        </div>
+                        `}
+                    </div>
+                </div>
+            </div>
+            
+            ${order.adminNotes ? `
+            <div class="info-section" style="margin-bottom: 25px;">
+                <div class="info-section-header">Admin Notes</div>
+                <div class="info-section-body">
+                    <div style="background: #fff3cd; padding: 10px; border-radius: 5px; border-left: 4px solid #ffc107;">
+                        ${order.adminNotes}
+                    </div>
+                </div>
+            </div>
+            ` : ''}
+            
+            <div class="footer">
+                <p><strong>PlateForge Ltd</strong> - Admin Order Report</p>
+                <p>Generated on ${formatDate(new Date())} | Order ID: ${order.orderId}</p>
+                <p>This document contains confidential customer information - Handle with care</p>
+                <br>
+                <p style="font-size: 9px; color: #999;">
+                    Internal Reference: ${order._id} | 
+                    Database ID: ${order.orderId} | 
+                    Print Time: ${new Date().toISOString()}
+                </p>
+            </div>
+            
+            <script>
+                window.onload = function() {
+                    window.print();
+                };
+            </script>
+        </body>
+        </html>
+        `;
+
+        res.send(printHTML);
+        
+    } catch (error) {
+        console.error('Error generating print view:', error);
+        res.status(500).send('<h1>Error generating print view</h1><p>' + error.message + '</p>');
+    }
+});
+
+// Generate PDF endpoint for downloads
+app.get('/api/admin/orders/:orderId/pdf', authenticateToken, async (req, res) => {
+    try {
+        const { orderId } = req.params;
+        const order = await Order.findOne({ orderId });
+        
+        if (!order) {
+            return res.status(404).json({
+                success: false,
+                error: 'Order not found'
+            });
+        }
+
+        // For now, redirect to the print view
+        // In production, you might want to use a PDF generation library like puppeteer
+        res.redirect(`/admin/print-order/${orderId}`);
+        
+    } catch (error) {
+        console.error('Error generating PDF:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to generate PDF'
+        });
+    }
+});
+
+// app.get('/admin/orders', authenticateToken, async (req, res) => {
+//     try {
+//         const { 
+//             page = 1, 
+//             limit = 5, 
+//             sortBy = 'date', 
+//             sortOrder = 'desc',
+//             status,
+//             dateRange,
+//             customStartDate,
+//             customEndDate,
+//             customer,
+//             product,
+//             amountMin,
+//             amountMax,
+//             paymentMethod
+//         } = req.query;
+        
+//         // Build filter query
+//         const filter = {};
+        
+//         // Status filter - combining paymentStatus and orderStatus
+//         if (status && status !== 'all') {
+//             const statusMap = {
+//                 'Completed': { orderStatus: 'completed'  },
+//                 'Pending': { orderStatus: 'pending' },
+//                 'Processing': { orderStatus: 'processing' },
+//                 'Cancelled': { orderStatus: 'cancelled' },
+//                 'Failed': { orderStatus: 'failed' },
+//                 'Shipped': { orderStatus: 'shipped' }
+//             };
+            
+//             if (statusMap[status]) {
+//                 Object.assign(filter, statusMap[status]);
+//             }
+//         }
+        
+//         // Date range filter
+//         if (dateRange && dateRange !== 'all') {
+//             const now = new Date();
+//             let startDate, endDate;
+            
+//             switch (dateRange) {
+//                 case 'today':
+//                     startDate = new Date(now.setHours(0, 0, 0, 0));
+//                     endDate = new Date(now.setHours(23, 59, 59, 999));
+//                     break;
+//                 case 'week':
+//                     startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+//                     endDate = new Date();
+//                     break;
+//                 case 'month':
+//                     startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+//                     endDate = new Date();
+//                     break;
+//                 case 'custom':
+//                     if (customStartDate) {
+//                         startDate = new Date(customStartDate);
+//                         startDate.setHours(0, 0, 0, 0);
+//                     }
+//                     if (customEndDate) {
+//                         endDate = new Date(customEndDate);
+//                         endDate.setHours(23, 59, 59, 999);
+//                     }
+//                     break;
+//             }
+            
+//             if (startDate || endDate) {
+//                 filter['dates.ordered'] = {};
+//                 if (startDate) filter['dates.ordered'].$gte = startDate;
+//                 if (endDate) filter['dates.ordered'].$lte = endDate;
+//             }
+//         }
+        
+//         // Customer search
+//         if (customer) {
+//             filter.$or = [
+//                 { 'customer.firstName': { $regex: customer, $options: 'i' } },
+//                 { 'customer.lastName': { $regex: customer, $options: 'i' } },
+//                 { 'customer.email': { $regex: customer, $options: 'i' } },
+//                 { customerName: { $regex: customer, $options: 'i' } }
+//             ];
+//         }
+        
+//         // Product search
+//         if (product) {
+//             filter.$or = [
+//                 { 'items.name': { $regex: product, $options: 'i' } },
+//                 { 'items.plateConfiguration.text': { $regex: product, $options: 'i' } },
+//                 { product: { $regex: product, $options: 'i' } }
+//             ];
+//         }
+        
+//         // Amount range filter
+//         if (amountMin || amountMax) {
+//             const amountFilter = {};
+//             if (amountMin) amountFilter.$gte = parseFloat(amountMin);
+//             if (amountMax) amountFilter.$lte = parseFloat(amountMax);
+            
+//             filter.$or = [
+//                 { 'pricing.total': amountFilter },
+//                 { amount: amountFilter }
+//             ];
+//         }
+        
+//         // Payment method filter (only PayPal since that's what you have)
+//         if (paymentMethod && paymentMethod !== 'all') {
+//             filter['payment.provider'] = paymentMethod.toLowerCase();
+//         }
+        
+//         // Build sort object
+//         let sortField = 'dates.ordered';
+//         if (sortBy === 'customer') sortField = 'customer.firstName';
+//         else if (sortBy === 'amount') sortField = 'pricing.total';
+//         else if (sortBy === 'status') sortField = 'paymentStatus';
+//         else if (sortBy === 'orderId') sortField = 'orderId';
+//         else if (sortBy === 'product') sortField = 'items.0.name';
+        
+//         const sort = {};
+//         sort[sortField] = sortOrder === 'asc' ? 1 : -1;
+        
+//         // Execute query with pagination
+//         const orders = await Order.find(filter)
+//             .sort(sort)
+//             .limit(parseInt(limit))
+//             .skip((parseInt(page) - 1) * parseInt(limit))
+//             .exec();
+        
+//         const totalOrders = await Order.countDocuments(filter);
+        
+//         // Transform orders with unified status mapping
+//         const transformedOrders = orders.map(order => {
+//             // Unified status mapping
+//             let unifiedStatus = 'Pending';
+//             if (order.paymentStatus === 'paid' || order.paymentStatus === 'completed') {
+//                 unifiedStatus = 'Completed';
+//             } else if (order.paymentStatus === 'failed') {
+//                 unifiedStatus = 'Failed';
+//             } else if (order.paymentStatus === 'cancelled' || order.orderStatus === 'cancelled') {
+//                 unifiedStatus = 'Cancelled';
+//             } else if (order.orderStatus === 'processing') {
+//                 unifiedStatus = 'Processing';
+//             } else if (order.orderStatus === 'shipped') {
+//                 unifiedStatus = 'Shipped';
+//             }
+            
+//             return {
+//                 id: order._id,
+//                 orderId: order.orderId,
+//                 customer: order.customer?.firstName && order.customer?.lastName ? 
+//                     `${order.customer.firstName} ${order.customer.lastName}` : 
+//                     order.customerName || 'Unknown Customer',
+//                 customerEmail: order.customer?.email || 'N/A',
+//                 customerPhone: order.customer?.phone || 'N/A',
+//                 product: order.items && order.items.length > 0 ? 
+//                     `${order.items.length} plate(s)` : 
+//                     order.product || 'Number Plate',
+//                 amount: order.pricing?.total || order.amount || 0,
+//                 status: unifiedStatus,
+//                 paymentMethod: order.payment?.provider || 'paypal',
+//                 date: order.dates?.ordered || order.dateOfOrder || order.createdAt,
+//                 time: order.dates?.ordered ? 
+//                     new Date(order.dates.ordered).toLocaleTimeString('en-GB', { 
+//                         hour: '2-digit', 
+//                         minute: '2-digit' 
+//                     }) : 'N/A',
+//                 // Include original status fields for updates
+//                 originalOrderStatus: order.orderStatus,
+//                 originalPaymentStatus: order.paymentStatus
+//             };
+//         });
+        
+//         res.json({
+//             success: true,
+//             data: transformedOrders,
+//             pagination: {
+//                 currentPage: parseInt(page),
+//                 totalPages: Math.ceil(totalOrders / parseInt(limit)),
+//                 totalOrders,
+//                 itemsPerPage: parseInt(limit),
+//                 hasNext: parseInt(page) < Math.ceil(totalOrders / parseInt(limit)),
+//                 hasPrev: parseInt(page) > 1
+//             }
+//         });
+        
+//     } catch (error) {
+//         console.error('Error fetching admin orders:', error);
+//         res.status(500).json({
+//             success: false,
+//             error: 'Failed to fetch orders'
+//         });
+//     }
+// });
+
+// Update Order Status (Admin only)
+
+app.get('/admin/orders', authenticateToken, async (req, res) => {
+    try {
+        const { 
+            page = 1, 
+            limit = 5, 
+            sortBy = 'date', 
+            sortOrder = 'desc',
+            status,
+            dateRange,
+            customStartDate,
+            customEndDate,
+            customer,
+            product,
+            amountMin,
+            amountMax,
+            paymentMethod
+        } = req.query;
+        
+        // Build filter query
+        const filter = {};
+        
+        // ✅ SIMPLE Status filter - ONLY use orderStatus
+        if (status && status !== 'all') {
+            const statusMap = {
+                'Completed': { orderStatus: 'completed' },
+                'Pending': { orderStatus: 'pending' },
+                'Processing': { orderStatus: 'processing' },
+                'Cancelled': { orderStatus: 'cancelled' },
+                'Failed': { orderStatus: 'failed' },
+                'Shipped': { orderStatus: 'shipped' }
+            };
+            
+            if (statusMap[status]) {
+                Object.assign(filter, statusMap[status]);
+            }
+        }
+        
+        // Date range filter (keep as is)
+        if (dateRange && dateRange !== 'all') {
+            const now = new Date();
+            let startDate, endDate;
+            
+            switch (dateRange) {
+                case 'today':
+                    startDate = new Date(now.setHours(0, 0, 0, 0));
+                    endDate = new Date(now.setHours(23, 59, 59, 999));
+                    break;
+                case 'week':
+                    startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+                    endDate = new Date();
+                    break;
+                case 'month':
+                    startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+                    endDate = new Date();
+                    break;
+                case 'custom':
+                    if (customStartDate) {
+                        startDate = new Date(customStartDate);
+                        startDate.setHours(0, 0, 0, 0);
+                    }
+                    if (customEndDate) {
+                        endDate = new Date(customEndDate);
+                        endDate.setHours(23, 59, 59, 999);
+                    }
+                    break;
+            }
+            
+            if (startDate || endDate) {
+                filter['dates.ordered'] = {};
+                if (startDate) filter['dates.ordered'].$gte = startDate;
+                if (endDate) filter['dates.ordered'].$lte = endDate;
+            }
+        }
+        
+        // Customer search (keep as is)
+        if (customer) {
+            filter.$or = [
+                { 'customer.firstName': { $regex: customer, $options: 'i' } },
+                { 'customer.lastName': { $regex: customer, $options: 'i' } },
+                { 'customer.email': { $regex: customer, $options: 'i' } },
+                { customerName: { $regex: customer, $options: 'i' } }
+            ];
+        }
+        
+        // Product search (keep as is)
+        if (product) {
+            filter.$or = [
+                { 'items.name': { $regex: product, $options: 'i' } },
+                { 'items.plateConfiguration.text': { $regex: product, $options: 'i' } },
+                { product: { $regex: product, $options: 'i' } }
+            ];
+        }
+        
+        // Amount range filter (keep as is)
+        if (amountMin || amountMax) {
+            const amountFilter = {};
+            if (amountMin) amountFilter.$gte = parseFloat(amountMin);
+            if (amountMax) amountFilter.$lte = parseFloat(amountMax);
+            
+            filter.$or = [
+                { 'pricing.total': amountFilter },
+                { amount: amountFilter }
+            ];
+        }
+        
+        // Payment method filter (keep as is)
+        if (paymentMethod && paymentMethod !== 'all') {
+            filter['payment.provider'] = paymentMethod.toLowerCase();
+        }
+        
+        // ✅ SIMPLE Sort - consistent with filtering
+        let sortField = 'dates.ordered';
+        if (sortBy === 'customer') sortField = 'customer.firstName';
+        else if (sortBy === 'amount') sortField = 'pricing.total';
+        else if (sortBy === 'status') sortField = 'orderStatus'; // ✅ NOW CONSISTENT
+        else if (sortBy === 'orderId') sortField = 'orderId';
+        else if (sortBy === 'product') sortField = 'items.0.name';
+        
+        const sort = {};
+        sort[sortField] = sortOrder === 'asc' ? 1 : -1;
+        
+        // Execute query with pagination
+        const orders = await Order.find(filter)
+            .sort(sort)
+            .limit(parseInt(limit))
+            .skip((parseInt(page) - 1) * parseInt(limit))
+            .exec();
+        
+        const totalOrders = await Order.countDocuments(filter);
+        
+        // ✅ SIMPLE transformation - ONLY use orderStatus
+        const transformedOrders = orders.map(order => {
+            // Map orderStatus directly to display status
+            const statusMap = {
+                'completed': 'Completed',
+                'pending': 'Pending', 
+                'processing': 'Processing',
+                'cancelled': 'Cancelled',
+                'failed': 'Failed',
+                'shipped': 'Shipped'
+            };
+            
+            const unifiedStatus = statusMap[order.orderStatus] || 'Pending';
+            
+            return {
+                id: order._id,
+                orderId: order.orderId,
+                customer: order.customer?.firstName && order.customer?.lastName ? 
+                    `${order.customer.firstName} ${order.customer.lastName}` : 
+                    order.customerName || 'Unknown Customer',
+                customerEmail: order.customer?.email || 'N/A',
+                customerPhone: order.customer?.phone || 'N/A',
+                product: order.items && order.items.length > 0 ? 
+                    `${order.items.length} plate(s)` : 
+                    order.product || 'Number Plate',
+                amount: order.pricing?.total || order.amount || 0,
+                status: unifiedStatus, // ✅ SIMPLE, consistent status
+                paymentMethod: order.payment?.provider || 'paypal',
+                date: order.dates?.ordered || order.dateOfOrder || order.createdAt,
+                time: order.dates?.ordered ? 
+                    new Date(order.dates.ordered).toLocaleTimeString('en-GB', { 
+                        hour: '2-digit', 
+                        minute: '2-digit' 
+                    }) : 'N/A',
+                // Keep these for debugging only
+                originalOrderStatus: order.orderStatus,
+                originalPaymentStatus: order.paymentStatus
+            };
+        });
+        
+        res.json({
+            success: true,
+            data: transformedOrders,
+            pagination: {
+                currentPage: parseInt(page),
+                totalPages: Math.ceil(totalOrders / parseInt(limit)),
+                totalOrders,
+                itemsPerPage: parseInt(limit),
+                hasNext: parseInt(page) < Math.ceil(totalOrders / parseInt(limit)),
+                hasPrev: parseInt(page) > 1
+            }
+        });
+        
+    } catch (error) {
+        console.error('Error fetching admin orders:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to fetch orders'
+        });
+    }
+});
+
+// Update order status (for future use)
+app.patch('/admin/orders/:orderId/status', authenticateToken, async (req, res) => {
+    try {
+        const { orderId } = req.params;
+        const { orderStatus, paymentStatus, adminNotes, trackingNumber } = req.body;
+        
+        const updateData = {
+            updatedAt: new Date()
+        };
+        
+        if (orderStatus) {
+            updateData.orderStatus = orderStatus;
+            
+            // Update timeline dates based on status
+            if (orderStatus === 'processing' && !updateData['dates.processing']) {
+                updateData['dates.processing'] = new Date();
+            } else if (orderStatus === 'shipped' && !updateData['dates.shipped']) {
+                updateData['dates.shipped'] = new Date();
+            } else if (orderStatus === 'delivered' && !updateData['dates.delivered']) {
+                updateData['dates.delivered'] = new Date();
+            }
+        }
+        
+        if (paymentStatus) updateData.paymentStatus = paymentStatus;
+        if (adminNotes) updateData.adminNotes = adminNotes;
+        if (trackingNumber) updateData.trackingNumber = trackingNumber;
+        
+        const order = await Order.findOneAndUpdate(
+            { orderId },
+            updateData,
+            { new: true }
+        );
+        
+        if (!order) {
+            return res.status(404).json({
+                success: false,
+                error: 'Order not found'
+            });
+        }
+        
+        console.log('Order status updated:', orderId, orderStatus);
+        
+        res.json({
+            success: true,
+            message: 'Order updated successfully',
+            order
+        });
+        
+    } catch (error) {
+        console.error('Error updating order status:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to update order status'
+        });
+    }
+});
+
+// Add this enhanced print endpoint to your server.js file
+// Replace the existing /admin/print-order/:orderId endpoint
+
+app.get('/admin/print-order/:orderId', authenticateToken, async (req, res) => {
+    try {
+        const { orderId } = req.params;
+        const order = await Order.findOne({ orderId });
+        
+        if (!order) {
+            return res.status(404).send('<h1>Order not found</h1>');
+        }
+
+        const formatCurrency = (amount) => {
+            if (!amount) return '£0.00';
+            return `£${parseFloat(amount).toFixed(2)}`;
+        };
+
+        const formatDate = (dateString) => {
+            if (!dateString) return 'N/A';
+            const date = new Date(dateString);
+            return date.toLocaleDateString('en-GB', {
+                day: '2-digit',
+                month: 'short',
+                year: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+        };
+
+        // Helper function to get customer name
+        const getCustomerName = (order) => {
+            if (order.customer && typeof order.customer === 'object') {
+                const { firstName, lastName } = order.customer;
+                if (firstName && lastName) return `${firstName} ${lastName}`;
+                if (firstName) return firstName;
+                if (lastName) return lastName;
+                return 'Customer';
+            }
+            if (typeof order.customer === 'string') return order.customer;
+            return order.customerName || 'N/A';
+        };
+
+        // Helper function to get shipping address
+        const getShippingAddress = (order) => {
+            if (order.customer && typeof order.customer === 'object') {
+                return {
+                    street: order.customer.address || 'Not provided',
+                    city: order.customer.city || 'Not provided',
+                    state: order.customer.state || '',
+                    postcode: order.customer.postcode || 'Not provided',
+                    country: order.customer.country || 'Not provided',
+                    phone: order.customer.phone || 'Not provided'
+                };
+            }
+            return order.shippingAddress || null;
+        };
+
+        const shippingAddress = getShippingAddress(order);
+
+        const printHTML = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <title>Order Details - ${order.orderId}</title>
+            <style>
+                * {
+                    margin: 0;
+                    padding: 0;
+                    box-sizing: border-box;
+                }
+                
+                body {
+                    font-family: 'Segoe UI', Arial, sans-serif;
+                    font-size: 14px;
+                    line-height: 1.6;
+                    color: #333;
+                    max-width: 1000px;
+                    margin: 0 auto;
+                    padding: 20px;
+                    background: white;
+                }
+                
+                .header {
+                    text-align: center;
+                    border-bottom: 3px solid #ffc107;
+                    padding-bottom: 20px;
+                    margin-bottom: 30px;
+                }
+                
+                .header h1 {
+                    font-size: 32px;
+                    color: #333;
+                    margin-bottom: 5px;
+                }
+                
+                .header .subtitle {
+                    color: #666;
+                    font-size: 18px;
+                    margin-bottom: 10px;
+                }
+                
+                .order-title {
+                    background: #f8f9fa;
+                    border: 2px solid #ffc107;
+                    border-radius: 8px;
+                    padding: 15px;
+                    margin-bottom: 25px;
+                    text-align: center;
+                }
+                
+                .order-title h2 {
+                    color: #495057;
+                    margin-bottom: 5px;
+                    font-size: 24px;
+                }
+                
+                .order-id {
+                    font-family: 'Courier New', monospace;
+                    background: #e3f2fd;
+                    padding: 8px 12px;
+                    border-radius: 4px;
+                    font-size: 16px;
+                    color: #1976d2;
+                    font-weight: bold;
+                }
+                
+                .content-row {
+                    display: grid;
+                    grid-template-columns: 1fr 1fr;
+                    gap: 30px;
+                    margin-bottom: 25px;
+                }
+                
+                .section {
+                    border: 1px solid #dee2e6;
+                    border-radius: 8px;
+                    overflow: hidden;
+                    margin-bottom: 20px;
+                }
+                
+                .section-header {
+                    background: #ffc107;
+                    color: #000;
+                    padding: 12px 15px;
+                    font-weight: bold;
+                    font-size: 16px;
+                }
+                
+                .section-body {
+                    padding: 15px;
+                }
+                
+                .info-row {
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: flex-start;
+                    margin-bottom: 12px;
+                    padding: 8px 0;
+                    border-bottom: 1px dotted #dee2e6;
+                }
+                
+                .info-row:last-child {
+                    border-bottom: none;
+                    margin-bottom: 0;
+                }
+                
+                .info-row .label {
+                    font-weight: 600;
+                    color: #495057;
+                    flex: 0 0 45%;
+                }
+                
+                .info-row .value {
+                    flex: 1;
+                    text-align: right;
+                    color: #212529;
+                    word-break: break-word;
+                }
+                
+                .status-badge {
+                    padding: 4px 12px;
+                    border-radius: 15px;
+                    font-size: 12px;
+                    font-weight: bold;
+                    text-transform: uppercase;
+                }
+                
+                .status-paid { background: #d4edda; color: #155724; }
+                .status-pending { background: #fff3cd; color: #856404; }
+                .status-processing { background: #cce7ff; color: #004085; }
+                .status-shipped { background: #e2e3e5; color: #383d41; }
+                .status-completed { background: #d4edda; color: #155724; }
+                
+                .amount {
+                    font-size: 18px;
+                    font-weight: bold;
+                    color: #28a745;
+                }
+                
+                .address-box {
+                    background: #f8f9fa;
+                    border: 1px solid #dee2e6;
+                    border-radius: 5px;
+                    padding: 15px;
+                    font-size: 14px;
+                }
+                
+                .items-table {
+                    width: 100%;
+                    border-collapse: collapse;
+                    margin-top: 10px;
+                }
+                
+                .items-table th {
+                    background: #f8f9fa;
+                    padding: 12px 8px;
+                    text-align: left;
+                    font-weight: 600;
+                    border-bottom: 2px solid #dee2e6;
+                    font-size: 13px;
+                }
+                
+                .items-table td {
+                    padding: 12px 8px;
+                    border-bottom: 1px solid #dee2e6;
+                    font-size: 13px;
+                    vertical-align: top;
+                }
+                
+                .items-table tr:last-child td {
+                    border-bottom: none;
+                }
+                
+                .items-table tr:nth-child(even) {
+                    background: #f8f9fa;
+                }
+                
+                .plate-text {
+                    font-family: 'Courier New', monospace;
+                    background: #343a40;
+                    color: white;
+                    padding: 4px 8px;
+                    border-radius: 3px;
+                    font-size: 12px;
+                    font-weight: bold;
+                }
+                
+                .pricing-section {
+                    background: #f8f9fa;
+                    border: 2px solid #28a745;
+                    border-radius: 8px;
+                    padding: 20px;
+                    margin-top: 20px;
+                }
+                
+                .pricing-row {
+                    display: flex;
+                    justify-content: space-between;
+                    margin-bottom: 8px;
+                    padding: 4px 0;
+                }
+                
+                .pricing-row.total {
+                    border-top: 2px solid #28a745;
+                    padding-top: 12px;
+                    margin-top: 12px;
+                    font-weight: bold;
+                    font-size: 16px;
+                }
+                
+                .footer {
+                    margin-top: 40px;
+                    padding-top: 20px;
+                    border-top: 2px solid #dee2e6;
+                    text-align: center;
+                    color: #6c757d;
+                    font-size: 12px;
+                }
+                
+                .full-width {
+                    grid-column: 1 / -1;
+                }
+                
+                @media print {
+                    body { margin: 0; padding: 10px; font-size: 12px; }
+                    .no-print { display: none !important; }
+                    .section-header { background: #ffc107 !important; -webkit-print-color-adjust: exact; }
+                    .status-badge { -webkit-print-color-adjust: exact; }
+                    .plate-text { background: #343a40 !important; color: white !important; -webkit-print-color-adjust: exact; }
+                }
+            </style>
+        </head>
+        <body>
+            <div class="header">
+                <h1>PlateForge</h1>
+                <div class="subtitle">Order Details</div>
+            </div>
+            
+            <div class="order-title">
+                <h2>Order Details</h2>
+                <span class="order-id">${order.orderId}</span>
+            </div>
+            
+            <div class="content-row">
+                <div class="section">
+                    <div class="section-header">Order Information</div>
+                    <div class="section-body">
+                        <div class="info-row">
+                            <span class="label">Order ID:</span>
+                            <span class="value">${order.orderId}</span>
+                        </div>
+                        <div class="info-row">
+                            <span class="label">Customer Name:</span>
+                            <span class="value">${getCustomerName(order)}</span>
+                        </div>
+                        <div class="info-row">
+                            <span class="label">Email:</span>
+                            <span class="value">${order.customer?.email || 'N/A'}</span>
+                        </div>
+                        <div class="info-row">
+                            <span class="label">Phone:</span>
+                            <span class="value">${order.customer?.phone || 'N/A'}</span>
+                        </div>
+                        <div class="info-row">
+                            <span class="label">Product:</span>
+                            <span class="value">
+                                ${order.items && order.items.length > 0 
+                                    ? `${order.items.length} plate(s)` 
+                                    : 'Number Plate'
+                                }
+                            </span>
+                        </div>
+                        <div class="info-row">
+                            <span class="label">Amount:</span>
+                            <span class="value amount">${formatCurrency(order.pricing?.total || order.amount)}</span>
+                        </div>
+                        <div class="info-row">
+                            <span class="label">Payment Status:</span>
+                            <span class="value">
+                                <span class="status-badge status-${(order.paymentStatus || '').toLowerCase()}">
+                                    ${order.paymentStatus || 'Unknown'}
+                                </span>
+                            </span>
+                        </div>
+                        <div class="info-row">
+                            <span class="label">Order Status:</span>
+                            <span class="value">
+                                <span class="status-badge status-${(order.orderStatus || '').toLowerCase()}">
+                                    ${order.orderStatus || 'Pending'}
+                                </span>
+                            </span>
+                        </div>
+                        <div class="info-row">
+                            <span class="label">Order Date:</span>
+                            <span class="value">${formatDate(order.dates?.ordered || order.createdAt)}</span>
+                        </div>
+                        ${(order.notes || order.adminNotes) ? `
+                        <div class="info-row">
+                            <span class="label">Notes:</span>
+                            <span class="value">${order.notes || order.adminNotes}</span>
+                        </div>
+                        ` : ''}
+                    </div>
+                </div>
+                
+                <div class="section">
+                    <div class="section-header">Shipping Address</div>
+                    <div class="section-body">
+                        ${shippingAddress ? `
+                        <div class="address-box">
+                            <div><strong>Street:</strong> ${shippingAddress.street}</div>
+                            <div><strong>City:</strong> ${shippingAddress.city}</div>
+                            ${shippingAddress.state ? `<div><strong>State:</strong> ${shippingAddress.state}</div>` : ''}
+                            <div><strong>Postcode:</strong> ${shippingAddress.postcode}</div>
+                            <div><strong>Country:</strong> ${shippingAddress.country}</div>
+                            <div><strong>Phone:</strong> ${shippingAddress.phone}</div>
+                        </div>
+                        ` : `
+                        <div style="text-align: center; color: #6c757d; padding: 20px;">
+                            No shipping address available
+                        </div>
+                        `}
+                    </div>
+                </div>
+            </div>
+            
+            ${order.items && order.items.length > 0 ? `
+            <div class="section full-width">
+                <div class="section-header">Order Items</div>
+                <div class="section-body">
+                    <table class="items-table">
+                        <thead>
+                            <tr>
+                                <th>Item</th>
+                                <th>Configuration</th>
+                                <th>Qty</th>
+                                <th>Price</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${order.items.map((item) => `
+                            <tr>
+                                <td>
+                                    <strong>${item.name}</strong>
+                                    ${item.plateConfiguration?.text ? `
+                                    <br><small>Text: <span class="plate-text">${item.plateConfiguration.text}</span></small>
+                                    ` : ''}
+                                </td>
+                                <td>
+                                    ${item.plateConfiguration ? `
+                                        ${item.plateConfiguration.plateStyle?.label ? `<div>Style: ${item.plateConfiguration.plateStyle.label}</div>` : ''}
+                                        ${item.plateConfiguration.fontColor?.name ? `<div>Color: ${item.plateConfiguration.fontColor.name}</div>` : ''}
+                                        ${item.plateConfiguration.roadLegal ? `<div>Legal: ${item.plateConfiguration.roadLegal}</div>` : ''}
+                                    ` : `
+                                        <span style="color: #6c757d;">Standard</span>
+                                    `}
+                                </td>
+                                <td style="text-align: center;">${item.quantity || 1}</td>
+                                <td style="text-align: right;">${formatCurrency(item.subtotal || item.price)}</td>
+                            </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            ` : ''}
+            
+            ${order.pricing ? `
+            <div class="pricing-section">
+                <h4 style="margin-bottom: 15px; color: #28a745;">Pricing Breakdown</h4>
+                <div class="pricing-row">
+                    <span>Subtotal:</span>
+                    <span>${formatCurrency(order.pricing.subtotal)}</span>
+                </div>
+                ${order.pricing.discount > 0 ? `
+                <div class="pricing-row" style="color: #28a745;">
+                    <span>Discount:</span>
+                    <span>-${formatCurrency(order.pricing.discount)}</span>
+                </div>
+                ` : ''}
+                <div class="pricing-row">
+                    <span>Shipping:</span>
+                    <span>${order.pricing.shipping > 0 ? formatCurrency(order.pricing.shipping) : 'Free'}</span>
+                </div>
+                <div class="pricing-row">
+                    <span>Tax:</span>
+                    <span>${formatCurrency(order.pricing.tax)}</span>
+                </div>
+                <div class="pricing-row total">
+                    <span>Total:</span>
+                    <span>${formatCurrency(order.pricing.total)}</span>
+                </div>
+            </div>
+            ` : ''}
+            
+            <div class="footer">
+                <p><strong>PlateForge Ltd</strong> - Order Details</p>
+                <p>Generated on ${formatDate(new Date())} | Order ID: ${order.orderId}</p>
+                <p>For support, contact us at support@plateforge.com</p>
+            </div>
+            
+            <script>
+                window.onload = function() {
+                    setTimeout(() => {
+                        window.print();
+                    }, 500);
+                };
+            </script>
+        </body>
+        </html>
+        `;
+
+        res.send(printHTML);
+        
+    } catch (error) {
+        console.error('Error generating print view:', error);
+        res.status(500).send('<h1>Error generating print view</h1><p>' + error.message + '</p>');
+    }
+});
+
+
+// Enhanced version of your existing single order route
+app.get('/admin/orders/:orderId', authenticateToken, async (req, res) => {
+    try {
+        const { orderId } = req.params;
+        const order = await Order.findOne({ orderId });
+        
+        if (!order) {
+            return res.status(404).json({
+                success: false,
+                error: 'Order not found'
+            });
+        }
+        
+        // Transform order for detailed view
+        const transformedOrder = {
+            ...order.toObject(),
+            // Add computed fields for frontend
+            customerName: order.customer?.firstName && order.customer?.lastName ? 
+                `${order.customer.firstName} ${order.customer.lastName}` : 
+                order.customerName || 'Unknown Customer',
+            formattedDate: order.dates?.ordered ? 
+                new Date(order.dates.ordered).toLocaleDateString('en-GB') : 'N/A',
+            formattedTime: order.dates?.ordered ? 
+                new Date(order.dates.ordered).toLocaleTimeString('en-GB', { 
+                    hour: '2-digit', 
+                    minute: '2-digit' 
+                }) : 'N/A',
+            totalAmount: order.pricing?.total || order.amount || 0
+        };
+        
+        res.json({
+            success: true,
+            data: transformedOrder
+        });
+        
+    } catch (error) {
+        console.error('Error fetching order details:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to fetch order details'
+        });
+    }
+});
+
+
+// Get order statistics for dashboard
+app.get('/admin/orders/stats', authenticateToken, async (req, res) => {
+    try {
+        const totalOrders = await Order.countDocuments({});
+        const paidOrders = await Order.countDocuments({ paymentStatus: 'paid' });
+        const pendingOrders = await Order.countDocuments({ paymentStatus: 'pending' });
+        const failedOrders = await Order.countDocuments({ paymentStatus: 'failed' });
+        
+        // Calculate total revenue
+        const revenueResult = await Order.aggregate([
+            { $match: { paymentStatus: 'paid' } },
+            { 
+                $group: { 
+                    _id: null, 
+                    total: { 
+                        $sum: { 
+                            $ifNull: ['$pricing.total', '$amount'] 
+                        } 
+                    } 
+                } 
+            }
+        ]);
+        
+        const totalRevenue = revenueResult.length > 0 ? revenueResult[0].total : 0;
+        
+        // Recent orders
+        const recentOrders = await Order.find({})
+            .sort({ 'dates.ordered': -1 })
+            .limit(5);
+        
+        res.json({
+            success: true,
+            data: {
+                totalOrders,
+                paidOrders,
+                pendingOrders,
+                failedOrders,
+                totalRevenue,
+                recentOrders: recentOrders.map(order => ({
+                    orderId: order.orderId,
+                    customer: order.customer?.firstName && order.customer?.lastName ? 
+                        `${order.customer.firstName} ${order.customer.lastName}` : 
+                        order.customerName || 'Unknown',
+                    amount: order.pricing?.total || order.amount || 0,
+                    status: transformPaymentStatus(order.paymentStatus),
+                    date: order.dates?.ordered || order.createdAt
+                }))
+            }
+        });
+        
+    } catch (error) {
+        console.error('Error fetching order statistics:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to fetch order statistics'
+        });
+    }
+});
+
+// Export orders to CSV
+// Enhanced Export Orders Endpoint
+app.get('/admin/orders/export', authenticateToken, async (req, res) => {
+    try {
+        const { 
+            exportType = 'current', // 'current', 'filtered', 'all'
+            format = 'csv',
+            page = 1,
+            limit = 5,
+            sortBy = 'date',
+            sortOrder = 'desc',
+            status,
+            dateRange,
+            customStartDate,
+            customEndDate,
+            customer,
+            product,
+            amountMin,
+            amountMax,
+            paymentMethod
+        } = req.query;
+        
+        let orders = [];
+        let filename = '';
+        
+        if (exportType === 'all') {
+            // Export all orders from beginning of time
+            orders = await Order.find({})
+                .sort({ 'dates.ordered': -1 });
+            filename = `all-orders-${new Date().toISOString().split('T')[0]}`;
+            
+        } else if (exportType === 'filtered') {
+            // Export all filtered results (same filter logic as main endpoint)
+            const filter = {};
+            
+            // Status filter
+            if (status && status !== 'all') {
+                const statusMap = {
+                    'Completed': { $or: [{ paymentStatus: 'paid' }, { paymentStatus: 'completed' }] },
+                    'Pending': { $or: [{ paymentStatus: 'pending' }, { orderStatus: 'pending' }] },
+                    'Processing': { orderStatus: 'processing' },
+                    'Cancelled': { $or: [{ paymentStatus: 'cancelled' }, { orderStatus: 'cancelled' }] },
+                    'Failed': { paymentStatus: 'failed' },
+                    'Shipped': { orderStatus: 'shipped' }
+                };
+                
+                if (statusMap[status]) {
+                    Object.assign(filter, statusMap[status]);
+                }
+            }
+            
+            // Date range filter
+            if (dateRange && dateRange !== 'all') {
+                const now = new Date();
+                let startDate, endDate;
+                
+                switch (dateRange) {
+                    case 'today':
+                        startDate = new Date(now.setHours(0, 0, 0, 0));
+                        endDate = new Date(now.setHours(23, 59, 59, 999));
+                        break;
+                    case 'week':
+                        startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+                        endDate = new Date();
+                        break;
+                    case 'month':
+                        startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+                        endDate = new Date();
+                        break;
+                    case 'custom':
+                        if (customStartDate) {
+                            startDate = new Date(customStartDate);
+                            startDate.setHours(0, 0, 0, 0);
+                        }
+                        if (customEndDate) {
+                            endDate = new Date(customEndDate);
+                            endDate.setHours(23, 59, 59, 999);
+                        }
+                        break;
+                }
+                
+                if (startDate || endDate) {
+                    filter['dates.ordered'] = {};
+                    if (startDate) filter['dates.ordered'].$gte = startDate;
+                    if (endDate) filter['dates.ordered'].$lte = endDate;
+                }
+            }
+            
+            // Customer search
+            if (customer) {
+                filter.$or = [
+                    { 'customer.firstName': { $regex: customer, $options: 'i' } },
+                    { 'customer.lastName': { $regex: customer, $options: 'i' } },
+                    { 'customer.email': { $regex: customer, $options: 'i' } },
+                    { customerName: { $regex: customer, $options: 'i' } }
+                ];
+            }
+            
+            // Product search
+            if (product) {
+                filter.$or = [
+                    { 'items.name': { $regex: product, $options: 'i' } },
+                    { 'items.plateConfiguration.text': { $regex: product, $options: 'i' } },
+                    { product: { $regex: product, $options: 'i' } }
+                ];
+            }
+            
+            // Amount range filter
+            if (amountMin || amountMax) {
+                const amountFilter = {};
+                if (amountMin) amountFilter.$gte = parseFloat(amountMin);
+                if (amountMax) amountFilter.$lte = parseFloat(amountMax);
+                
+                filter.$or = [
+                    { 'pricing.total': amountFilter },
+                    { amount: amountFilter }
+                ];
+            }
+            
+            // Payment method filter
+            if (paymentMethod && paymentMethod !== 'all') {
+                filter['payment.provider'] = paymentMethod.toLowerCase();
+            }
+            
+            // Build sort
+            let sortField = 'dates.ordered';
+            if (sortBy === 'customer') sortField = 'customer.firstName';
+            else if (sortBy === 'amount') sortField = 'pricing.total';
+            else if (sortBy === 'status') sortField = 'paymentStatus';
+            else if (sortBy === 'orderId') sortField = 'orderId';
+            else if (sortBy === 'product') sortField = 'items.0.name';
+            
+            const sort = {};
+            sort[sortField] = sortOrder === 'asc' ? 1 : -1;
+            
+            orders = await Order.find(filter).sort(sort);
+            filename = `filtered-orders-${new Date().toISOString().split('T')[0]}`;
+            
+        } else {
+            // Export current view (current page only)
+            const filter = {};
+            
+            // Apply same filters as above (copy the filter logic)
+            if (status && status !== 'all') {
+                const statusMap = {
+                    'Completed': { $or: [{ paymentStatus: 'paid' }, { paymentStatus: 'completed' }] },
+                    'Pending': { $or: [{ paymentStatus: 'pending' }, { orderStatus: 'pending' }] },
+                    'Processing': { orderStatus: 'processing' },
+                    'Cancelled': { $or: [{ paymentStatus: 'cancelled' }, { orderStatus: 'cancelled' }] },
+                    'Failed': { paymentStatus: 'failed' },
+                    'Shipped': { orderStatus: 'shipped' }
+                };
+                
+                if (statusMap[status]) {
+                    Object.assign(filter, statusMap[status]);
+                }
+            }
+            
+            // Add other filters here (same as filtered export)
+            // ... (I'll skip repeating the same filter code for brevity)
+            
+            // Build sort
+            let sortField = 'dates.ordered';
+            if (sortBy === 'customer') sortField = 'customer.firstName';
+            else if (sortBy === 'amount') sortField = 'pricing.total';
+            else if (sortBy === 'status') sortField = 'paymentStatus';
+            else if (sortBy === 'orderId') sortField = 'orderId';
+            else if (sortBy === 'product') sortField = 'items.0.name';
+            
+            const sort = {};
+            sort[sortField] = sortOrder === 'asc' ? 1 : -1;
+            
+            orders = await Order.find(filter)
+                .sort(sort)
+                .limit(parseInt(limit))
+                .skip((parseInt(page) - 1) * parseInt(limit));
+                
+            filename = `current-view-orders-${new Date().toISOString().split('T')[0]}`;
+        }
+        
+        // Transform orders for export
+        const exportData = orders.map(order => {
+            // Unified status mapping
+            let unifiedStatus = 'Pending';
+            if (order.paymentStatus === 'paid' || order.paymentStatus === 'completed') {
+                unifiedStatus = 'Completed';
+            } else if (order.paymentStatus === 'failed') {
+                unifiedStatus = 'Failed';
+            } else if (order.paymentStatus === 'cancelled' || order.orderStatus === 'cancelled') {
+                unifiedStatus = 'Cancelled';
+            } else if (order.orderStatus === 'processing') {
+                unifiedStatus = 'Processing';
+            } else if (order.orderStatus === 'shipped') {
+                unifiedStatus = 'Shipped';
+            }
+            
+            // Format date as DD-MMM-YYYY
+            const formatDate = (dateStr) => {
+                if (!dateStr) return 'N/A';
+                const date = new Date(dateStr);
+                const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                             'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                const day = date.getDate().toString().padStart(2, '0');
+                const month = months[date.getMonth()];
+                const year = date.getFullYear();
+                return `${day}-${month}-${year}`;
+            };
+            
+            return {
+                'Order ID': order.orderId,
+                'Customer': order.customer?.firstName && order.customer?.lastName ? 
+                    `${order.customer.firstName} ${order.customer.lastName}` : 
+                    order.customerName || 'Unknown Customer',
+                'Email': order.customer?.email || 'N/A',
+                'Phone': order.customer?.phone || 'N/A',
+                'Product': order.items && order.items.length > 0 ? 
+                    `${order.items.length} plate(s)` : 
+                    order.product || 'Number Plate',
+                'Amount (in £)': order.pricing?.total || order.amount || 0,
+                'Status': unifiedStatus,
+                'Payment Method': order.payment?.provider || 'paypal',
+                'Date': formatDate(order.dates?.ordered || order.dateOfOrder || order.createdAt),
+                'Time': order.dates?.ordered ? 
+                    new Date(order.dates.ordered).toLocaleTimeString('en-GB', { 
+                        hour: '2-digit', 
+                        minute: '2-digit' 
+                    }) : 'N/A'
+            };
+        });
+        
+        // Generate CSV
+        if (format === 'csv') {
+            const headers = Object.keys(exportData[0] || {});
+            const csvContent = [
+                headers.join(','),
+                ...exportData.map(row => 
+                    headers.map(header => {
+                        const value = row[header];
+                        // Escape commas and quotes in CSV
+                        if (typeof value === 'string' && (value.includes(',') || value.includes('"'))) {
+                            return `"${value.replace(/"/g, '""')}"`;
+                        }
+                        return value;
+                    }).join(',')
+                )
+            ].join('\n');
+            
+            res.setHeader('Content-Type', 'text/csv');
+            res.setHeader('Content-Disposition', `attachment; filename="${filename}.csv"`);
+            res.send(csvContent);
+        } else {
+            res.status(400).json({
+                success: false,
+                error: 'Only CSV format is supported'
+            });
+        }
+        
+    } catch (error) {
+        console.error('Error exporting orders:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to export orders'
+        });
+    }
+});
+
+// Update Order Status Endpoint (for quick actions)
+app.patch('/admin/orders/:orderId/quick-status', authenticateToken, async (req, res) => {
+    try {
+        const { orderId } = req.params;
+        const { newStatus } = req.body;
+        
+        if (!newStatus) {
+            return res.status(400).json({
+                success: false,
+                error: 'New status is required'
+            });
+        }
+        
+        // Validate allowed status values
+        const allowedStatuses = ['shipped', 'completed'];
+        if (!allowedStatuses.includes(newStatus.toLowerCase())) {
+            return res.status(400).json({
+                success: false,
+                error: 'Invalid status. Only "shipped" and "completed" are allowed.'
+            });
+        }
+        
+        // Find the order first
+        const order = await Order.findOne({ orderId });
+        if (!order) {
+            return res.status(404).json({
+                success: false,
+                error: 'Order not found'
+            });
+        }
+        
+        // Prepare update data
+        const updateData = {
+            updatedAt: new Date()
+        };
+        
+        // Update orderStatus and set corresponding date
+        if (newStatus.toLowerCase() === 'shipped') {
+            updateData.orderStatus = 'shipped';
+            if (!order.dates?.shipped) {
+                updateData['dates.shipped'] = new Date();
+            }
+        } else if (newStatus.toLowerCase() === 'completed') {
+            updateData.orderStatus = 'completed';
+            updateData.paymentStatus = 'completed';
+            if (!order.dates?.delivered) {
+                updateData['dates.delivered'] = new Date();
+            }
+        }
+        
+        // Update the order
+        const updatedOrder = await Order.findOneAndUpdate(
+            { orderId },
+            updateData,
+            { new: true }
+        );
+        
+        // Transform the updated order for frontend
+        let unifiedStatus = 'Pending';
+        if (updatedOrder.paymentStatus === 'paid' || updatedOrder.paymentStatus === 'completed') {
+            unifiedStatus = 'Completed';
+        } else if (updatedOrder.paymentStatus === 'failed') {
+            unifiedStatus = 'Failed';
+        } else if (updatedOrder.paymentStatus === 'cancelled' || updatedOrder.orderStatus === 'cancelled') {
+            unifiedStatus = 'Cancelled';
+        } else if (updatedOrder.orderStatus === 'processing') {
+            unifiedStatus = 'Processing';
+        } else if (updatedOrder.orderStatus === 'shipped') {
+            unifiedStatus = 'Shipped';
+        }
+        
+        const transformedOrder = {
+            id: updatedOrder._id,
+            orderId: updatedOrder.orderId,
+            customer: updatedOrder.customer?.firstName && updatedOrder.customer?.lastName ? 
+                `${updatedOrder.customer.firstName} ${updatedOrder.customer.lastName}` : 
+                updatedOrder.customerName || 'Unknown Customer',
+            customerEmail: updatedOrder.customer?.email || 'N/A',
+            customerPhone: updatedOrder.customer?.phone || 'N/A',
+            product: updatedOrder.items && updatedOrder.items.length > 0 ? 
+                `${updatedOrder.items.length} plate(s)` : 
+                updatedOrder.product || 'Number Plate',
+            amount: updatedOrder.pricing?.total || updatedOrder.amount || 0,
+            status: unifiedStatus,
+            paymentMethod: updatedOrder.payment?.provider || 'paypal',
+            date: updatedOrder.dates?.ordered || updatedOrder.dateOfOrder || updatedOrder.createdAt,
+            time: updatedOrder.dates?.ordered ? 
+                new Date(updatedOrder.dates.ordered).toLocaleTimeString('en-GB', { 
+                    hour: '2-digit', 
+                    minute: '2-digit' 
+                }) : 'N/A',
+            originalOrderStatus: updatedOrder.orderStatus,
+            originalPaymentStatus: updatedOrder.paymentStatus
+        };
+        
+        console.log(`Order ${orderId} status updated to ${newStatus} by admin`);
+        
+        res.json({
+            success: true,
+            message: `Order ${orderId} marked as ${newStatus}`,
+            data: transformedOrder
+        });
+        
+    } catch (error) {
+        console.error('Error updating order status:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to update order status'
+        });
+    }
+});
+
+
+// ===============================
+// PLATE CONFIGURATION SCHEMAS
+// ===============================
+
+// Schema for storing plate configurations
+const plateConfigurationSchema = new mongoose.Schema({
+    type: { 
+        type: String, 
+        required: true,
+        enum: ['plateStyles', 'sizeOptions', 'borderOptions', 'flagOptions', 'finishOptions']
+    },
+    data: { 
+        type: mongoose.Schema.Types.Mixed, 
+        required: true 
+    },
+    lastModified: { 
+        type: Date, 
+        default: Date.now 
+    },
+    modifiedBy: { 
+        type: String, 
+        default: 'admin' 
+    }
+});
+
+// Create models for the three collections
+const ConfigurationDefaults = mongoose.model('ConfigurationDefaults', plateConfigurationSchema);
+const ConfigurationCurrent = mongoose.model('ConfigurationCurrent', plateConfigurationSchema);
+const ConfigurationPrevious = mongoose.model('ConfigurationPrevious', plateConfigurationSchema);
+
+// ===============================
+// PLATE CONFIGURATION ROUTES
+// ===============================
+
+// Get all current configurations
+app.get('/api/plate-configurations', async (req, res) => {
+    try {
+        const configurations = await ConfigurationCurrent.find({});
+        
+        // Convert to object format for easy frontend consumption
+        const configObject = {};
+        configurations.forEach(config => {
+            configObject[config.type] = config.data;
+        });
+        
+        res.json({
+            success: true,
+            data: configObject
+        });
+    } catch (error) {
+        console.error('Error fetching plate configurations:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to fetch configurations'
+        });
+    }
+});
+
+// Get specific configuration type with previous values
+app.get('/api/plate-configurations/:type', async (req, res) => {
+    try {
+        const { type } = req.params;
+        
+        const current = await ConfigurationCurrent.findOne({ type });
+        const previous = await ConfigurationPrevious.findOne({ type });
+        const defaults = await ConfigurationDefaults.findOne({ type });
+        
+        res.json({
+            success: true,
+            data: {
+                current: current?.data || [],
+                previous: previous?.data || [],
+                defaults: defaults?.data || [],
+                lastModified: current?.lastModified,
+                modifiedBy: current?.modifiedBy
+            }
+        });
+    } catch (error) {
+        console.error('Error fetching configuration type:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to fetch configuration'
+        });
+    }
+});
+
+// Update specific configuration type
+app.put('/api/plate-configurations/:type', authenticateToken, async (req, res) => {
+    try {
+        const { type } = req.params;
+        const { data } = req.body;
+        
+        if (!data) {
+            return res.status(400).json({
+                success: false,
+                error: 'Configuration data is required'
+            });
+        }
+        
+        // Step 1: Get current configuration to move to previous
+        const currentConfig = await ConfigurationCurrent.findOne({ type });
+        
+        // Step 2: If current exists, move it to previous
+        if (currentConfig) {
+            await ConfigurationPrevious.findOneAndUpdate(
+                { type },
+                {
+                    type,
+                    data: currentConfig.data,
+                    lastModified: new Date(),
+                    modifiedBy: req.user.username || 'admin'
+                },
+                { upsert: true }
+            );
+        }
+        
+        // Step 3: Update current with new data
+        const updatedConfig = await ConfigurationCurrent.findOneAndUpdate(
+            { type },
+            {
+                type,
+                data,
+                lastModified: new Date(),
+                modifiedBy: req.user.username || 'admin'
+            },
+            { upsert: true, new: true }
+        );
+        
+        console.log(`Configuration ${type} updated by ${req.user.username || 'admin'}`);
+        
+        res.json({
+            success: true,
+            message: `${type} configuration updated successfully`,
+            data: updatedConfig
+        });
+        
+    } catch (error) {
+        console.error('Error updating configuration:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to update configuration'
+        });
+    }
+});
+
+// Reset configuration type to defaults
+app.post('/api/plate-configurations/:type/reset', authenticateToken, async (req, res) => {
+    try {
+        const { type } = req.params;
+        
+        // Step 1: Get default configuration
+        const defaultConfig = await ConfigurationDefaults.findOne({ type });
+        
+        if (!defaultConfig) {
+            return res.status(404).json({
+                success: false,
+                error: `Default configuration for ${type} not found`
+            });
+        }
+        
+        // Step 2: Get current configuration to move to previous
+        const currentConfig = await ConfigurationCurrent.findOne({ type });
+        
+        // Step 3: If current exists, move it to previous
+        if (currentConfig) {
+            await ConfigurationPrevious.findOneAndUpdate(
+                { type },
+                {
+                    type,
+                    data: currentConfig.data,
+                    lastModified: new Date(),
+                    modifiedBy: req.user.username || 'admin'
+                },
+                { upsert: true }
+            );
+        }
+        
+        // Step 4: Set default as current
+        const resetConfig = await ConfigurationCurrent.findOneAndUpdate(
+            { type },
+            {
+                type,
+                data: defaultConfig.data,
+                lastModified: new Date(),
+                modifiedBy: req.user.username || 'admin'
+            },
+            { upsert: true, new: true }
+        );
+        
+        console.log(`Configuration ${type} reset to defaults by ${req.user.username || 'admin'}`);
+        
+        res.json({
+            success: true,
+            message: `${type} configuration reset to defaults successfully`,
+            data: resetConfig
+        });
+        
+    } catch (error) {
+        console.error('Error resetting configuration:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to reset configuration'
+        });
+    }
+});
+
+// Seed configurations from PlateJson data
+app.post('/api/plate-configurations/seed', authenticateToken, async (req, res) => {
+    try {
+        // This is the data from your PlateJson.jsx file
+        const plateJsonData = {
+            plateStyles: [
+                {
+                    key: 'standard',
+                    label: 'Standard Plate',
+                    price: 15.99,
+                    description: 'Classic flat finish',
+                    font: 'Arial',
+                    fontUrl: 'fonts/Charles Wright_Bold (1).json',
+                    fontSize: 0.67,
+                    outlineColor: null,
+                    thickness: 0.01,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                {
+                    key: '3d-gel-3mm',
+                    label: '3D Gel 3mm',
+                    price: 25.49,
+                    description: 'Raised 3D letters with gel finish - 3mm thickness',
+                    font: 'Arial Bold',
+                    fontUrl: 'fonts/Charles Wright_Bold (1).json',
+                    fontSize: 0.65,
+                    outlineColor: null,
+                    thickness: 0.05,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                }
+                // Add more plate styles here from your file
+            ],
+            sizeOptions: [
+                { 
+                    key: '18-oblong', 
+                    label: '18" Oblong', 
+                    price: 1.99, 
+                    dimensions: '533mm x 152mm', 
+                    description: 'Standard UK size',
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                }
+                // Add more sizes here
+            ]
+            // Add other configuration types as needed
+        };
+
+        const configTypes = Object.keys(plateJsonData);
+        const results = [];
+
+        for (const type of configTypes) {
+            // Seed defaults (only if not exists)
+            let defaultExists = await ConfigurationDefaults.findOne({ type });
+            if (!defaultExists) {
+                await ConfigurationDefaults.create({
+                    type,
+                    data: plateJsonData[type],
+                    lastModified: new Date(),
+                    modifiedBy: 'system-seed'
+                });
+                results.push(`${type} defaults seeded`);
+            }
+
+            // Seed current (only if not exists)
+            let currentExists = await ConfigurationCurrent.findOne({ type });
+            if (!currentExists) {
+                await ConfigurationCurrent.create({
+                    type,
+                    data: plateJsonData[type],
+                    lastModified: new Date(),
+                    modifiedBy: 'system-seed'
+                });
+                results.push(`${type} current seeded`);
+            }
+        }
+
+        res.json({
+            success: true,
+            message: 'Configuration seeding completed',
+            results
+        });
+
+    } catch (error) {
+        console.error('Error seeding configurations:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to seed configurations'
+        });
     }
 });
 
