@@ -1977,8 +1977,16 @@ app.put('/api/user/profile', authenticateUserToken, async (req, res) => {
 // ===============================
 
 // Get user's orders
+// Update the existing /api/user/orders route to support pagination
 app.get('/api/user/orders', authenticateUserToken, async (req, res) => {
     try {
+        const { 
+            page = 1, 
+            limit = 5, 
+            status = 'all', 
+            sortBy = 'newest' 
+        } = req.query;
+        
         const user = await User.findById(req.user.id);
         if (!user) {
             return res.status(404).json({
@@ -1987,9 +1995,41 @@ app.get('/api/user/orders', authenticateUserToken, async (req, res) => {
             });
         }
 
-        // Find orders by user email (since orders store customer email)
-        const orders = await Order.find({ 'customer.email': user.email })
-            .sort({ 'dates.ordered': -1 });
+        // Build filter
+        const filter = { 'customer.email': user.email };
+        
+        // Add status filter
+        if (status !== 'all') {
+            filter.orderStatus = status;
+        }
+
+        // Build sort
+        let sort = {};
+        switch (sortBy) {
+            case 'newest':
+                sort = { 'dates.ordered': -1 };
+                break;
+            case 'oldest':
+                sort = { 'dates.ordered': 1 };
+                break;
+            case 'amount-high':
+                sort = { 'pricing.total': -1 };
+                break;
+            case 'amount-low':
+                sort = { 'pricing.total': 1 };
+                break;
+            default:
+                sort = { 'dates.ordered': -1 };
+        }
+
+        // Execute query with pagination
+        const orders = await Order.find(filter)
+            .sort(sort)
+            .limit(parseInt(limit))
+            .skip((parseInt(page) - 1) * parseInt(limit));
+
+        const totalOrders = await Order.countDocuments(filter);
+        const totalPages = Math.ceil(totalOrders / parseInt(limit));
 
         // Transform orders for frontend
         const transformedOrders = orders.map(order => ({
@@ -2010,7 +2050,14 @@ app.get('/api/user/orders', authenticateUserToken, async (req, res) => {
         res.json({
             success: true,
             data: transformedOrders,
-            count: transformedOrders.length
+            pagination: {
+                currentPage: parseInt(page),
+                totalPages,
+                totalOrders,
+                ordersPerPage: parseInt(limit),
+                hasNext: parseInt(page) < totalPages,
+                hasPrev: parseInt(page) > 1
+            }
         });
 
     } catch (error) {
@@ -5318,6 +5365,298 @@ function generateOrderHTML(order) {
     `;
 }
 
+// Enhanced Export Orders Endpoint - Complete Implementation
+app.get('/admin/orders/export', authenticateToken, async (req, res) => {
+    console.log("export route got hit");
+    try {
+        const { 
+            exportType = 'current', // 'current', 'filtered', 'all'
+            format = 'csv',
+            page = 1,
+            limit = 5,
+            sortBy = 'date',
+            sortOrder = 'desc',
+            status,
+            dateRange,
+            customStartDate,
+            customEndDate,
+            customer,
+            product,
+            amountMin,
+            amountMax,
+            paymentMethod
+        } = req.query;
+        
+        let orders = [];
+        let filename = '';
+        let filterDescription = '';
+        
+        // Helper function to build filter object
+        const buildFilter = () => {
+            const filter = {};
+            
+            // Status filter
+            if (status && status !== 'all') {
+                const statusMap = {
+                    'Completed': { orderStatus: 'completed' },
+                    'Pending': { orderStatus: 'pending' },
+                    'Processing': { orderStatus: 'processing' },
+                    'Cancelled': { orderStatus: 'cancelled' },
+                    'Failed': { orderStatus: 'failed' },
+                    'Shipped': { orderStatus: 'shipped' }
+                };
+                
+                if (statusMap[status]) {
+                    Object.assign(filter, statusMap[status]);
+                    filterDescription += `Status: ${status}, `;
+                }
+            }
+            
+            // Date range filter
+            if (dateRange && dateRange !== 'all') {
+                const now = new Date();
+                let startDate, endDate;
+                
+                switch (dateRange) {
+                    case 'today':
+                        startDate = new Date(now.setHours(0, 0, 0, 0));
+                        endDate = new Date(now.setHours(23, 59, 59, 999));
+                        break;
+                    case 'week':
+                        startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+                        endDate = new Date();
+                        break;
+                    case 'month':
+                        startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+                        endDate = new Date();
+                        break;
+                    case 'custom':
+                        if (customStartDate) {
+                            startDate = new Date(customStartDate);
+                            startDate.setHours(0, 0, 0, 0);
+                        }
+                        if (customEndDate) {
+                            endDate = new Date(customEndDate);
+                            endDate.setHours(23, 59, 59, 999);
+                        }
+                        break;
+                }
+                
+                if (startDate || endDate) {
+                    filter['dates.ordered'] = {};
+                    if (startDate) filter['dates.ordered'].$gte = startDate;
+                    if (endDate) filter['dates.ordered'].$lte = endDate;
+                    filterDescription += `Date: ${dateRange}, `;
+                }
+            }
+            
+            // Customer search
+            if (customer) {
+                filter.$or = [
+                    { 'customer.firstName': { $regex: customer, $options: 'i' } },
+                    { 'customer.lastName': { $regex: customer, $options: 'i' } },
+                    { 'customer.email': { $regex: customer, $options: 'i' } },
+                    { customerName: { $regex: customer, $options: 'i' } }
+                ];
+                filterDescription += `Customer: ${customer}, `;
+            }
+            
+            // Product search
+            if (product) {
+                const productFilter = {
+                    $or: [
+                        { 'items.name': { $regex: product, $options: 'i' } },
+                        { 'items.plateConfiguration.text': { $regex: product, $options: 'i' } },
+                        { product: { $regex: product, $options: 'i' } }
+                    ]
+                };
+                
+                if (filter.$or) {
+                    filter.$and = [{ $or: filter.$or }, productFilter];
+                    delete filter.$or;
+                } else {
+                    Object.assign(filter, productFilter);
+                }
+                filterDescription += `Product: ${product}, `;
+            }
+            
+            // Amount range filter
+            if (amountMin || amountMax) {
+                const amountFilter = {};
+                if (amountMin) amountFilter.$gte = parseFloat(amountMin);
+                if (amountMax) amountFilter.$lte = parseFloat(amountMax);
+                
+                filter.$or = filter.$or || [];
+                filter.$or.push(
+                    { 'pricing.total': amountFilter },
+                    { amount: amountFilter }
+                );
+                filterDescription += `Amount: ${amountMin || '0'}-${amountMax || '∞'}, `;
+            }
+            
+            // Payment method filter
+            if (paymentMethod && paymentMethod !== 'all') {
+                filter['payment.provider'] = paymentMethod.toLowerCase();
+                filterDescription += `Payment: ${paymentMethod}, `;
+            }
+            
+            return filter;
+        };
+
+        // Build sort object
+        const buildSort = () => {
+            let sortField = 'dates.ordered';
+            if (sortBy === 'customer') sortField = 'customer.firstName';
+            else if (sortBy === 'amount') sortField = 'pricing.total';
+            else if (sortBy === 'status') sortField = 'orderStatus';
+            else if (sortBy === 'orderId') sortField = 'orderId';
+            else if (sortBy === 'product') sortField = 'items.0.name';
+            
+            const sort = {};
+            sort[sortField] = sortOrder === 'asc' ? 1 : -1;
+            return sort;
+        };
+
+        const filter = buildFilter();
+        const sort = buildSort();
+        
+        // Handle different export types
+        switch (exportType) {
+            case 'all':
+                orders = await Order.find({}).sort(sort);
+                filename = `all-orders-${new Date().toISOString().split('T')[0]}`;
+                console.log(`Exporting ALL orders: ${orders.length} orders`);
+                break;
+                
+            case 'filtered':
+                orders = await Order.find(filter).sort(sort);
+                filename = `filtered-orders-${new Date().toISOString().split('T')[0]}`;
+                console.log(`Exporting FILTERED orders: ${orders.length} orders with filters: ${filterDescription}`);
+                break;
+                
+            case 'current':
+            default:
+                orders = await Order.find(filter)
+                    .sort(sort)
+                    .limit(parseInt(limit))
+                    .skip((parseInt(page) - 1) * parseInt(limit));
+                filename = `current-view-page${page}-${new Date().toISOString().split('T')[0]}`;
+                console.log(`Exporting CURRENT VIEW: ${orders.length} orders (page ${page}, limit ${limit})`);
+                break;
+        }
+
+        // Transform orders for export
+        const exportData = orders.map(order => {
+            // Status mapping
+            const statusMap = {
+                'completed': 'Completed',
+                'pending': 'Pending', 
+                'processing': 'Processing',
+                'cancelled': 'Cancelled',
+                'failed': 'Failed',
+                'shipped': 'Shipped'
+            };
+            
+            const unifiedStatus = statusMap[order.orderStatus] || 'Pending';
+            
+            // Format date as DD-MMM-YYYY
+            const formatDate = (dateStr) => {
+                if (!dateStr) return 'N/A';
+                const date = new Date(dateStr);
+                const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                             'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                const day = date.getDate().toString().padStart(2, '0');
+                const month = months[date.getMonth()];
+                const year = date.getFullYear();
+                return `${day}-${month}-${year}`;
+            };
+            
+            return {
+                'Order ID': order.orderId,
+                'Customer': order.customer?.firstName && order.customer?.lastName ? 
+                    `${order.customer.firstName} ${order.customer.lastName}` : 
+                    order.customerName || 'Unknown Customer',
+                'Email': order.customer?.email || 'N/A',
+                'Phone': order.customer?.phone || 'N/A',
+                'Product': order.items && order.items.length > 0 ? 
+                    `${order.items.length} plate(s)` : 
+                    order.product || 'Number Plate',
+                'Amount (in £)': order.pricing?.total || order.amount || 0,
+                'Status': unifiedStatus,
+                'Payment Method': order.payment?.provider || 'paypal',
+                'Date': formatDate(order.dates?.ordered || order.dateOfOrder || order.createdAt),
+                'Time': order.dates?.ordered ? 
+                    new Date(order.dates.ordered).toLocaleTimeString('en-GB', { 
+                        hour: '2-digit', 
+                        minute: '2-digit' 
+                    }) : 'N/A',
+                'Transaction ID': order.payment?.transactionId || order.payment?.paypalPaymentId || 'N/A',
+                'Order Status': order.orderStatus || 'pending',
+                'Payment Status': order.paymentStatus || 'pending',
+                'Items Count': order.items?.length || 0,
+                'Subtotal': order.pricing?.subtotal || 0,
+                'Tax': order.pricing?.tax || 0,
+                'Shipping': order.pricing?.shipping || 0,
+                'Discount': order.pricing?.discount || 0,
+                'City': order.customer?.city || 'N/A',
+                'Postcode': order.customer?.postcode || 'N/A',
+                'Country': order.customer?.country || 'N/A'
+            };
+        });
+        
+        // Generate CSV
+        if (format === 'csv') {
+            if (exportData.length === 0) {
+                return res.status(404).json({
+                    success: false,
+                    error: 'No orders found to export'
+                });
+            }
+
+            const headers = Object.keys(exportData[0]);
+            const csvContent = [
+                headers.join(','),
+                ...exportData.map(row => 
+                    headers.map(header => {
+                        const value = row[header];
+                        // Escape commas and quotes in CSV
+                        if (typeof value === 'string' && (value.includes(',') || value.includes('"') || value.includes('\n'))) {
+                            return `"${value.replace(/"/g, '""')}"`;
+                        }
+                        return value;
+                    }).join(',')
+                )
+            ].join('\n');
+            
+            // Set headers for file download
+            res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+            res.setHeader('Content-Disposition', `attachment; filename="${filename}.csv"`);
+            res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+            res.setHeader('Pragma', 'no-cache');
+            res.setHeader('Expires', '0');
+            
+            // Add BOM for proper Excel UTF-8 handling
+            const csvWithBOM = '\ufeff' + csvContent;
+            
+            console.log(`✅ Export completed: ${exportData.length} orders exported as ${filename}.csv`);
+            res.send(csvWithBOM);
+        } else {
+            res.status(400).json({
+                success: false,
+                error: 'Only CSV format is supported'
+            });
+        }
+        
+    } catch (error) {
+        console.error('Error exporting orders:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to export orders',
+            details: error.message
+        });
+    }
+});
+
 // Additional endpoint to get order details for admin dashboard
 app.get('/admin/order-details/:orderId', authenticateToken, async (req, res) => {
     try {
@@ -6948,272 +7287,6 @@ app.get('/admin/orders/stats', authenticateToken, async (req, res) => {
     }
 });
 
-// Export orders to CSV
-// Enhanced Export Orders Endpoint
-app.get('/admin/orders/export', authenticateToken, async (req, res) => {
-    try {
-        const { 
-            exportType = 'current', // 'current', 'filtered', 'all'
-            format = 'csv',
-            page = 1,
-            limit = 5,
-            sortBy = 'date',
-            sortOrder = 'desc',
-            status,
-            dateRange,
-            customStartDate,
-            customEndDate,
-            customer,
-            product,
-            amountMin,
-            amountMax,
-            paymentMethod
-        } = req.query;
-        
-        let orders = [];
-        let filename = '';
-        
-        if (exportType === 'all') {
-            // Export all orders from beginning of time
-            orders = await Order.find({})
-                .sort({ 'dates.ordered': -1 });
-            filename = `all-orders-${new Date().toISOString().split('T')[0]}`;
-            
-        } else if (exportType === 'filtered') {
-            // Export all filtered results (same filter logic as main endpoint)
-            const filter = {};
-            
-            // Status filter
-            if (status && status !== 'all') {
-                const statusMap = {
-                    'Completed': { $or: [{ paymentStatus: 'paid' }, { paymentStatus: 'completed' }] },
-                    'Pending': { $or: [{ paymentStatus: 'pending' }, { orderStatus: 'pending' }] },
-                    'Processing': { orderStatus: 'processing' },
-                    'Cancelled': { $or: [{ paymentStatus: 'cancelled' }, { orderStatus: 'cancelled' }] },
-                    'Failed': { paymentStatus: 'failed' },
-                    'Shipped': { orderStatus: 'shipped' }
-                };
-                
-                if (statusMap[status]) {
-                    Object.assign(filter, statusMap[status]);
-                }
-            }
-            
-            // Date range filter
-            if (dateRange && dateRange !== 'all') {
-                const now = new Date();
-                let startDate, endDate;
-                
-                switch (dateRange) {
-                    case 'today':
-                        startDate = new Date(now.setHours(0, 0, 0, 0));
-                        endDate = new Date(now.setHours(23, 59, 59, 999));
-                        break;
-                    case 'week':
-                        startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-                        endDate = new Date();
-                        break;
-                    case 'month':
-                        startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-                        endDate = new Date();
-                        break;
-                    case 'custom':
-                        if (customStartDate) {
-                            startDate = new Date(customStartDate);
-                            startDate.setHours(0, 0, 0, 0);
-                        }
-                        if (customEndDate) {
-                            endDate = new Date(customEndDate);
-                            endDate.setHours(23, 59, 59, 999);
-                        }
-                        break;
-                }
-                
-                if (startDate || endDate) {
-                    filter['dates.ordered'] = {};
-                    if (startDate) filter['dates.ordered'].$gte = startDate;
-                    if (endDate) filter['dates.ordered'].$lte = endDate;
-                }
-            }
-            
-            // Customer search
-            if (customer) {
-                filter.$or = [
-                    { 'customer.firstName': { $regex: customer, $options: 'i' } },
-                    { 'customer.lastName': { $regex: customer, $options: 'i' } },
-                    { 'customer.email': { $regex: customer, $options: 'i' } },
-                    { customerName: { $regex: customer, $options: 'i' } }
-                ];
-            }
-            
-            // Product search
-            if (product) {
-                filter.$or = [
-                    { 'items.name': { $regex: product, $options: 'i' } },
-                    { 'items.plateConfiguration.text': { $regex: product, $options: 'i' } },
-                    { product: { $regex: product, $options: 'i' } }
-                ];
-            }
-            
-            // Amount range filter
-            if (amountMin || amountMax) {
-                const amountFilter = {};
-                if (amountMin) amountFilter.$gte = parseFloat(amountMin);
-                if (amountMax) amountFilter.$lte = parseFloat(amountMax);
-                
-                filter.$or = [
-                    { 'pricing.total': amountFilter },
-                    { amount: amountFilter }
-                ];
-            }
-            
-            // Payment method filter
-            if (paymentMethod && paymentMethod !== 'all') {
-                filter['payment.provider'] = paymentMethod.toLowerCase();
-            }
-            
-            // Build sort
-            let sortField = 'dates.ordered';
-            if (sortBy === 'customer') sortField = 'customer.firstName';
-            else if (sortBy === 'amount') sortField = 'pricing.total';
-            else if (sortBy === 'status') sortField = 'paymentStatus';
-            else if (sortBy === 'orderId') sortField = 'orderId';
-            else if (sortBy === 'product') sortField = 'items.0.name';
-            
-            const sort = {};
-            sort[sortField] = sortOrder === 'asc' ? 1 : -1;
-            
-            orders = await Order.find(filter).sort(sort);
-            filename = `filtered-orders-${new Date().toISOString().split('T')[0]}`;
-            
-        } else {
-            // Export current view (current page only)
-            const filter = {};
-            
-            // Apply same filters as above (copy the filter logic)
-            if (status && status !== 'all') {
-                const statusMap = {
-                    'Completed': { $or: [{ paymentStatus: 'paid' }, { paymentStatus: 'completed' }] },
-                    'Pending': { $or: [{ paymentStatus: 'pending' }, { orderStatus: 'pending' }] },
-                    'Processing': { orderStatus: 'processing' },
-                    'Cancelled': { $or: [{ paymentStatus: 'cancelled' }, { orderStatus: 'cancelled' }] },
-                    'Failed': { paymentStatus: 'failed' },
-                    'Shipped': { orderStatus: 'shipped' }
-                };
-                
-                if (statusMap[status]) {
-                    Object.assign(filter, statusMap[status]);
-                }
-            }
-            
-            // Add other filters here (same as filtered export)
-            // ... (I'll skip repeating the same filter code for brevity)
-            
-            // Build sort
-            let sortField = 'dates.ordered';
-            if (sortBy === 'customer') sortField = 'customer.firstName';
-            else if (sortBy === 'amount') sortField = 'pricing.total';
-            else if (sortBy === 'status') sortField = 'paymentStatus';
-            else if (sortBy === 'orderId') sortField = 'orderId';
-            else if (sortBy === 'product') sortField = 'items.0.name';
-            
-            const sort = {};
-            sort[sortField] = sortOrder === 'asc' ? 1 : -1;
-            
-            orders = await Order.find(filter)
-                .sort(sort)
-                .limit(parseInt(limit))
-                .skip((parseInt(page) - 1) * parseInt(limit));
-                
-            filename = `current-view-orders-${new Date().toISOString().split('T')[0]}`;
-        }
-        
-        // Transform orders for export
-        const exportData = orders.map(order => {
-            // Unified status mapping
-            let unifiedStatus = 'Pending';
-            if (order.paymentStatus === 'paid' || order.paymentStatus === 'completed') {
-                unifiedStatus = 'Completed';
-            } else if (order.paymentStatus === 'failed') {
-                unifiedStatus = 'Failed';
-            } else if (order.paymentStatus === 'cancelled' || order.orderStatus === 'cancelled') {
-                unifiedStatus = 'Cancelled';
-            } else if (order.orderStatus === 'processing') {
-                unifiedStatus = 'Processing';
-            } else if (order.orderStatus === 'shipped') {
-                unifiedStatus = 'Shipped';
-            }
-            
-            // Format date as DD-MMM-YYYY
-            const formatDate = (dateStr) => {
-                if (!dateStr) return 'N/A';
-                const date = new Date(dateStr);
-                const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-                             'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-                const day = date.getDate().toString().padStart(2, '0');
-                const month = months[date.getMonth()];
-                const year = date.getFullYear();
-                return `${day}-${month}-${year}`;
-            };
-            
-            return {
-                'Order ID': order.orderId,
-                'Customer': order.customer?.firstName && order.customer?.lastName ? 
-                    `${order.customer.firstName} ${order.customer.lastName}` : 
-                    order.customerName || 'Unknown Customer',
-                'Email': order.customer?.email || 'N/A',
-                'Phone': order.customer?.phone || 'N/A',
-                'Product': order.items && order.items.length > 0 ? 
-                    `${order.items.length} plate(s)` : 
-                    order.product || 'Number Plate',
-                'Amount (in £)': order.pricing?.total || order.amount || 0,
-                'Status': unifiedStatus,
-                'Payment Method': order.payment?.provider || 'paypal',
-                'Date': formatDate(order.dates?.ordered || order.dateOfOrder || order.createdAt),
-                'Time': order.dates?.ordered ? 
-                    new Date(order.dates.ordered).toLocaleTimeString('en-GB', { 
-                        hour: '2-digit', 
-                        minute: '2-digit' 
-                    }) : 'N/A'
-            };
-        });
-        
-        // Generate CSV
-        if (format === 'csv') {
-            const headers = Object.keys(exportData[0] || {});
-            const csvContent = [
-                headers.join(','),
-                ...exportData.map(row => 
-                    headers.map(header => {
-                        const value = row[header];
-                        // Escape commas and quotes in CSV
-                        if (typeof value === 'string' && (value.includes(',') || value.includes('"'))) {
-                            return `"${value.replace(/"/g, '""')}"`;
-                        }
-                        return value;
-                    }).join(',')
-                )
-            ].join('\n');
-            
-            res.setHeader('Content-Type', 'text/csv');
-            res.setHeader('Content-Disposition', `attachment; filename="${filename}.csv"`);
-            res.send(csvContent);
-        } else {
-            res.status(400).json({
-                success: false,
-                error: 'Only CSV format is supported'
-            });
-        }
-        
-    } catch (error) {
-        console.error('Error exporting orders:', error);
-        res.status(500).json({
-            success: false,
-            error: 'Failed to export orders'
-        });
-    }
-});
-
 // Update Order Status Endpoint (for quick actions)
 app.patch('/admin/orders/:orderId/quick-status', authenticateToken, async (req, res) => {
     try {
@@ -7533,10 +7606,10 @@ app.post('/api/plate-configurations/:type/reset', authenticateToken, async (req,
     }
 });
 
-// Seed configurations from PlateJson data
+// Seed configurations from PlateJson data - COMPLETE VERSION
 app.post('/api/plate-configurations/seed', authenticateToken, async (req, res) => {
     try {
-        // This is the data from your PlateJson.jsx file
+        // Complete data from your PlateJson.jsx file
         const plateJsonData = {
             plateStyles: [
                 {
@@ -7562,9 +7635,201 @@ app.post('/api/plate-configurations/seed', authenticateToken, async (req, res) =
                     outlineColor: null,
                     thickness: 0.05,
                     image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                {
+                    key: '3d-gel-5mm',
+                    label: '3D Gel 5mm',
+                    price: 28.48,
+                    description: 'Raised 3D letters with gel finish - 5mm thickness',
+                    font: 'Arial Bold',
+                    fontUrl: 'fonts/Charles Wright_Bold (1).json',
+                    fontSize: 0.65,
+                    outlineColor: null,
+                    thickness: 0.10,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                {
+                    key: '4d-gel-3mm',
+                    label: '4D Gel 3mm',
+                    price: 28.49,
+                    description: 'Premium 4D raised letters - 3mm thickness',
+                    font: 'Impact',
+                    fontUrl: 'fonts/Charles Wright_Bold (1).json',
+                    fontSize: 0.65,
+                    outlineColor: null,
+                    thickness: 0.03,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                {
+                    key: '4d-gel-5mm',
+                    label: '4D Gel 5mm',
+                    price: 31.48,
+                    description: 'Premium 4D raised letters - 5mm thickness',
+                    font: 'Impact',
+                    fontUrl: 'fonts/Charles Wright_Bold (1).json',
+                    fontSize: 0.65,
+                    outlineColor: null,
+                    thickness: 0.10,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                {
+                    key: '4d-crystal-green-3mm',
+                    label: '4D Crystal Green 3mm',
+                    price: 32.99,
+                    description: '4D letters with green crystal outline - 3mm thickness',
+                    font: 'Impact Bold',
+                    fontUrl: 'fonts/Charles Wright_Bold (1).json',
+                    fontSize: 0.65,
+                    outlineColor: '#00FF00',
+                    thickness: 0.05,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                {
+                    key: '4d-crystal-green-5mm',
+                    label: '4D Crystal Green 5mm',
+                    price: 35.98,
+                    description: '4D letters with green crystal outline - 5mm thickness',
+                    font: 'Impact Bold',
+                    fontUrl: 'fonts/Charles Wright_Bold (1).json',
+                    fontSize: 0.65,
+                    outlineColor: '#00FF00',
+                    thickness: 0.10,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                {
+                    key: '4d-crystal-red-3mm',
+                    label: '4D Crystal Red 3mm',
+                    price: 32.99,
+                    description: '4D letters with red crystal outline - 3mm thickness',
+                    font: 'Impact Bold',
+                    fontUrl: 'fonts/Charles Wright_Bold (1).json',
+                    fontSize: 0.65,
+                    outlineColor: '#FF0000',
+                    thickness: 0.05,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                {
+                    key: '4d-crystal-red-5mm',
+                    label: '4D Crystal Red 5mm',
+                    price: 35.98,
+                    description: '4D letters with red crystal outline - 5mm thickness',
+                    font: 'Impact Bold',
+                    fontUrl: 'fonts/Charles Wright_Bold (1).json',
+                    fontSize: 0.65,
+                    outlineColor: '#FF0000',
+                    thickness: 0.10,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                {
+                    key: '4d-crystal-blue-3mm',
+                    label: '4D Crystal Blue 3mm',
+                    price: 32.99,
+                    description: '4D letters with blue crystal outline - 3mm thickness',
+                    font: 'Impact Bold',
+                    fontUrl: 'fonts/Charles Wright_Bold (1).json',
+                    fontSize: 0.65,
+                    outlineColor: '#0066CC',
+                    thickness: 0.05,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                {
+                    key: '4d-crystal-blue-5mm',
+                    label: '4D Crystal Blue 5mm',
+                    price: 35.98,
+                    description: '4D letters with blue crystal outline - 5mm thickness',
+                    font: 'Impact Bold',
+                    fontUrl: 'fonts/Charles Wright_Bold (1).json',
+                    fontSize: 0.65,
+                    outlineColor: '#0066CC',
+                    thickness: 0.10,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                {
+                    key: '4d-neon-gel-green-3mm',
+                    label: '4D Neon Gel Green 3mm',
+                    price: 34.99,
+                    description: 'Neon effect with green 4D letters - 3mm thickness',
+                    font: 'Impact Bold',
+                    fontUrl: 'fonts/Charles Wright_Bold (1).json',
+                    fontSize: 0.65,
+                    outlineColor: '#00FF00',
+                    thickness: 0.05,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                {
+                    key: '4d-neon-gel-green-5mm',
+                    label: '4D Neon Gel Green 5mm',
+                    price: 37.98,
+                    description: 'Neon effect with green 4D letters - 5mm thickness',
+                    font: 'Impact Bold',
+                    fontUrl: 'fonts/Charles Wright_Bold (1).json',
+                    fontSize: 0.65,
+                    outlineColor: '#00FF00',
+                    thickness: 0.10,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                {
+                    key: '4d-neon-gel-red-3mm',
+                    label: '4D Neon Gel Red 3mm',
+                    price: 34.99,
+                    description: 'Neon effect with red 4D letters - 3mm thickness',
+                    font: 'Impact Bold',
+                    fontUrl: 'fonts/Charles Wright_Bold (1).json',
+                    fontSize: 0.65,
+                    outlineColor: '#FF0000',
+                    thickness: 0.05,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                {
+                    key: '4d-neon-gel-red-5mm',
+                    label: '4D Neon Gel Red 5mm',
+                    price: 37.98,
+                    description: 'Neon effect with red 4D letters - 5mm thickness',
+                    font: 'Impact Bold',
+                    fontUrl: 'fonts/Charles Wright_Bold (1).json',
+                    fontSize: 0.65,
+                    outlineColor: '#FF0000',
+                    thickness: 0.10,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                {
+                    key: '5d-gel-5mm',
+                    label: '5D Gel 5mm',
+                    price: 35.99,
+                    description: 'Ultra premium 5D finish - 5mm thickness',
+                    font: 'Helvetica Bold',
+                    fontUrl: 'fonts/Charles Wright_Bold (1).json',
+                    fontSize: 0.65,
+                    outlineColor: null,
+                    thickness: 0.10,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                {
+                    key: 'laser-cut-3mm',
+                    label: 'Laser Cut 3mm',
+                    price: 22.99,
+                    description: 'Precision laser cut letters - 3mm thickness',
+                    font: 'Futura',
+                    fontUrl: 'fonts/Charles Wright_Bold (1).json',
+                    fontSize: 0.65,
+                    outlineColor: null,
+                    thickness: 0.05,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                {
+                    key: 'carbon-fiber-5mm',
+                    label: 'Carbon Fiber 5mm',
+                    price: 45.99,
+                    description: 'Carbon fiber texture - 5mm thickness',
+                    font: 'Eurostile',
+                    fontUrl: 'fonts/Charles Wright_Bold (1).json',
+                    fontSize: 0.65,
+                    outlineColor: null,
+                    thickness: 0.10,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
                 }
-                // Add more plate styles here from your file
             ],
+            
             sizeOptions: [
                 { 
                     key: '18-oblong', 
@@ -7573,10 +7838,385 @@ app.post('/api/plate-configurations/seed', authenticateToken, async (req, res) =
                     dimensions: '533mm x 152mm', 
                     description: 'Standard UK size',
                     image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                { 
+                    key: '21-oblong', 
+                    label: '21" Oblong', 
+                    price: 2.99, 
+                    dimensions: '533mm x 152mm', 
+                    description: 'Extended length',
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                { 
+                    key: '4x4', 
+                    label: '4x4 Badge', 
+                    price: 3.99, 
+                    dimensions: '533mm x 152mm', 
+                    description: 'Off-road vehicle badge',
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
                 }
-                // Add more sizes here
+            ],
+
+            borderOptions: [
+                { 
+                    key: 'none', 
+                    name: 'No Border', 
+                    label: 'No Border',
+                    price: 0, 
+                    color: 'transparent', 
+                    type: 'none', 
+                    borderWidth: 0,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                { 
+                    key: '4d-black-3mm', 
+                    name: '4D Black 3mm Border',
+                    label: '4D Black 3mm Border', 
+                    price: 3.99, 
+                    color: '#000000', 
+                    type: '4d', 
+                    borderWidth: 3,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                { 
+                    key: '4d-black-5mm', 
+                    name: '4D Black 5mm Border',
+                    label: '4D Black 5mm Border', 
+                    price: 5.99, 
+                    color: '#000000', 
+                    type: '4d', 
+                    borderWidth: 5,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                { 
+                    key: 'printed-black', 
+                    name: 'Printed Black Border',
+                    label: 'Printed Black Border', 
+                    price: 3.99, 
+                    color: '#000000', 
+                    type: 'printed', 
+                    borderWidth: 2,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                { 
+                    key: 'printed-blue', 
+                    name: 'Printed Blue Border',
+                    label: 'Printed Blue Border', 
+                    price: 4.99, 
+                    color: '#0000FF', 
+                    type: 'printed', 
+                    borderWidth: 2,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                { 
+                    key: 'printed-red', 
+                    name: 'Printed Red Border',
+                    label: 'Printed Red Border', 
+                    price: 4.99, 
+                    color: '#FF0000', 
+                    type: 'printed', 
+                    borderWidth: 2,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                { 
+                    key: 'printed-green', 
+                    name: 'Printed Green Border',
+                    label: 'Printed Green Border', 
+                    price: 4.99, 
+                    color: '#00FF00', 
+                    type: 'printed', 
+                    borderWidth: 2,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                { 
+                    key: 'printed-orange', 
+                    name: 'Printed Orange Border',
+                    label: 'Printed Orange Border', 
+                    price: 4.99, 
+                    color: '#FF8C00', 
+                    type: 'printed', 
+                    borderWidth: 2,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                { 
+                    key: 'printed-white', 
+                    name: 'Printed White Border',
+                    label: 'Printed White Border', 
+                    price: 3.99, 
+                    color: '#FFFFFF', 
+                    type: 'printed', 
+                    borderWidth: 2,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                { 
+                    key: 'printed-gold', 
+                    name: 'Printed Gold Border',
+                    label: 'Printed Gold Border', 
+                    price: 6.99, 
+                    color: '#FFD700', 
+                    type: 'printed', 
+                    borderWidth: 2,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                { 
+                    key: 'printed-silver', 
+                    name: 'Printed Silver Border',
+                    label: 'Printed Silver Border', 
+                    price: 5.99, 
+                    color: '#C0C0C0', 
+                    type: 'printed', 
+                    borderWidth: 2,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                { 
+                    key: 'crystal-blue', 
+                    name: 'Crystal Blue Border',
+                    label: 'Crystal Blue Border', 
+                    price: 7.99, 
+                    color: '#0066CC', 
+                    type: 'crystal', 
+                    borderWidth: 3,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                { 
+                    key: 'crystal-green', 
+                    name: 'Crystal Green Border',
+                    label: 'Crystal Green Border', 
+                    price: 7.99, 
+                    color: '#00FF00', 
+                    type: 'crystal', 
+                    borderWidth: 3,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                { 
+                    key: 'crystal-red', 
+                    name: 'Crystal Red Border',
+                    label: 'Crystal Red Border', 
+                    price: 7.99, 
+                    color: '#FF0000', 
+                    type: 'crystal', 
+                    borderWidth: 3,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                { 
+                    key: 'crystal-orange', 
+                    name: 'Crystal Orange Border',
+                    label: 'Crystal Orange Border', 
+                    price: 7.99, 
+                    color: '#FF8C00', 
+                    type: 'crystal', 
+                    borderWidth: 3,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                { 
+                    key: 'crystal-purple', 
+                    name: 'Crystal Purple Border',
+                    label: 'Crystal Purple Border', 
+                    price: 7.99, 
+                    color: '#800080', 
+                    type: 'crystal', 
+                    borderWidth: 3,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                { 
+                    key: 'crystal-white', 
+                    name: 'Crystal White Border',
+                    label: 'Crystal White Border', 
+                    price: 7.99, 
+                    color: '#FFFFFF', 
+                    type: 'crystal', 
+                    borderWidth: 3,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                { 
+                    key: 'standard-black', 
+                    name: 'Black Border',
+                    label: 'Black Border', 
+                    price: 2.99, 
+                    color: '#000000', 
+                    type: 'standard', 
+                    borderWidth: 2,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                { 
+                    key: 'standard-white', 
+                    name: 'White Border',
+                    label: 'White Border', 
+                    price: 2.99, 
+                    color: '#FFFFFF', 
+                    type: 'standard', 
+                    borderWidth: 2,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                { 
+                    key: 'standard-blue', 
+                    name: 'Blue Border',
+                    label: 'Blue Border', 
+                    price: 3.99, 
+                    color: '#0000FF', 
+                    type: 'standard', 
+                    borderWidth: 2,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                { 
+                    key: 'standard-red', 
+                    name: 'Red Border',
+                    label: 'Red Border', 
+                    price: 3.99, 
+                    color: '#FF0000', 
+                    type: 'standard', 
+                    borderWidth: 2,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                { 
+                    key: 'standard-green', 
+                    name: 'Green Border',
+                    label: 'Green Border', 
+                    price: 3.99, 
+                    color: '#00FF00', 
+                    type: 'standard', 
+                    borderWidth: 2,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                { 
+                    key: 'standard-yellow', 
+                    name: 'Yellow Border',
+                    label: 'Yellow Border', 
+                    price: 3.99, 
+                    color: '#FFFF00', 
+                    type: 'standard', 
+                    borderWidth: 2,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                { 
+                    key: 'standard-purple', 
+                    name: 'Purple Border',
+                    label: 'Purple Border', 
+                    price: 3.99, 
+                    color: '#800080', 
+                    type: 'standard', 
+                    borderWidth: 2,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                { 
+                    key: 'standard-orange', 
+                    name: 'Orange Border',
+                    label: 'Orange Border', 
+                    price: 3.99, 
+                    color: '#FF8C00', 
+                    type: 'standard', 
+                    borderWidth: 2,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                { 
+                    key: 'standard-gold', 
+                    name: 'Gold Border',
+                    label: 'Gold Border', 
+                    price: 5.99, 
+                    color: '#FFD700', 
+                    type: 'standard', 
+                    borderWidth: 2,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                { 
+                    key: 'standard-silver', 
+                    name: 'Silver Border',
+                    label: 'Silver Border', 
+                    price: 4.99, 
+                    color: '#C0C0C0', 
+                    type: 'standard', 
+                    borderWidth: 2,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                }
+            ],
+
+            finishOptions: [
+                { 
+                    key: 'standard', 
+                    label: 'Standard Finish', 
+                    price: 0, 
+                    description: 'Matte protective coating',
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                { 
+                    key: 'gloss', 
+                    label: 'High Gloss', 
+                    price: 2.99, 
+                    description: 'Glossy protective coating',
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                { 
+                    key: 'anti-tamper', 
+                    label: 'Anti-Tamper', 
+                    price: 4.99, 
+                    description: 'Security screws included',
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                { 
+                    key: 'weatherproof', 
+                    label: 'Weatherproof', 
+                    price: 3.99, 
+                    description: 'Enhanced weather protection',
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                }
+            ],
+
+            flagOptions: [
+                { 
+                    key: 'none', 
+                    name: 'No Flag', 
+                    label: 'No Flag',
+                    text: '', 
+                    price: 0, 
+                    flagImage: null,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                { 
+                    key: 'union-jack', 
+                    name: 'Union Jack', 
+                    label: 'Union Jack Flag',
+                    text: 'UK', 
+                    price: 3.99, 
+                    flagImage: 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjAiIGhlaWdodD0iMzAiIHZpZXdCb3g9IjAgMCA2MCAzMCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHJlY3Qgd2lkdGg9IjYwIiBoZWlnaHQ9IjMwIiBmaWxsPSIjMDA2NkNDIi8+CjxwYXRoIGQ9Ik0wIDBoNjBsMCAxNUgweiIgZmlsbD0iI0ZGRkZGRiIvPgo8cGF0aCBkPSJNMCAxNWg2MHYxNUgweiIgZmlsbD0iI0ZGRkZGRiIvPgo8cGF0aCBkPSJNMjcgMGg2djMwSDE2eiIgZmlsbD0iI0ZGMDAwMCIvPgo8cGF0aCBkPSJNMCAxMmg2MHY2SDB6IiBmaWxsPSIjRkYwMDAwIi8+Cjwvc3ZnPg==',
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                { 
+                    key: 'wales-flag', 
+                    name: 'Wales Flag', 
+                    label: 'Wales Flag',
+                    text: 'CYM', 
+                    price: 3.99, 
+                    flagImage: 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjAiIGhlaWdodD0iMzAiIHZpZXdCb3g9IjAgMCA2MCAzMCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHJlY3Qgd2lkdGg9IjYwIiBoZWlnaHQ9IjE1IiBmaWxsPSIjRkZGRkZGIi8+CjxyZWN0IHk9IjE1IiB3aWR0aD0iNjAiIGhlaWdodD0iMTUiIGZpbGw9IiMwMDgwMDAiLz4KPC9zdmc+',
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                { 
+                    key: 'scotland-flag', 
+                    name: 'Scotland Flag', 
+                    label: 'Scotland Flag',
+                    text: 'SCO', 
+                    price: 3.99, 
+                    flagImage: 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjAiIGhlaWdodD0iMzAiIHZpZXdCb3g9IjAgMCA2MCAzMCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHJlY3Qgd2lkdGg9IjYwIiBoZWlnaHQ9IjMwIiBmaWxsPSIjMDA2NkNDIi8+PC9zdmc+',
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                { 
+                    key: 'ireland-flag', 
+                    name: 'Ireland Flag', 
+                    label: 'Ireland Flag',
+                    text: 'IRE', 
+                    price: 3.99, 
+                    flagImage: 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjAiIGhlaWdodD0iMzAiIHZpZXdCb3g9IjAgMCA2MCAzMCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHJlY3Qgd2lkdGg9IjIwIiBoZWlnaHQ9IjMwIiBmaWxsPSIjMDA4MDAwIi8+CjxyZWN0IHg9IjIwIiB3aWR0aD0iMjAiIGhlaWdodD0iMzAiIGZpbGw9IiNGRkZGRkYiLz4KPHJlY3QgeD0iNDAiIHdpZHRoPSIyMCIgaGVpZ2h0PSIzMCIgZmlsbD0iI0ZGNjYwMCIvPgo8L3N2Zz4=',
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                },
+                { 
+                    key: 'custom-upload', 
+                    name: 'Custom Upload', 
+                    label: 'Custom Flag Upload',
+                    text: 'CUSTOM', 
+                    price: 7.99, 
+                    flagImage: null,
+                    image: 'images/4D-Gel-3mm-Main-Image-Pair-Web-v2-white-640x360.webp'
+                }
             ]
-            // Add other configuration types as needed
         };
 
         const configTypes = Object.keys(plateJsonData);
@@ -7592,7 +8232,9 @@ app.post('/api/plate-configurations/seed', authenticateToken, async (req, res) =
                     lastModified: new Date(),
                     modifiedBy: 'system-seed'
                 });
-                results.push(`${type} defaults seeded`);
+                results.push(`${type} defaults seeded (${plateJsonData[type].length} items)`);
+            } else {
+                results.push(`${type} defaults already exist (${defaultExists.data.length} items)`);
             }
 
             // Seed current (only if not exists)
@@ -7604,21 +8246,34 @@ app.post('/api/plate-configurations/seed', authenticateToken, async (req, res) =
                     lastModified: new Date(),
                     modifiedBy: 'system-seed'
                 });
-                results.push(`${type} current seeded`);
+                results.push(`${type} current seeded (${plateJsonData[type].length} items)`);
+            } else {
+                results.push(`${type} current already exists (${currentExists.data.length} items)`);
             }
         }
 
+        console.log('Configuration seeding completed:', results);
+
         res.json({
             success: true,
-            message: 'Configuration seeding completed',
-            results
+            message: 'Configuration seeding completed successfully',
+            results,
+            summary: {
+                plateStyles: plateJsonData.plateStyles.length,
+                sizeOptions: plateJsonData.sizeOptions.length,
+                borderOptions: plateJsonData.borderOptions.length,
+                flagOptions: plateJsonData.flagOptions.length,
+                finishOptions: plateJsonData.finishOptions.length,
+                totalItems: Object.values(plateJsonData).reduce((sum, arr) => sum + arr.length, 0)
+            }
         });
 
     } catch (error) {
         console.error('Error seeding configurations:', error);
         res.status(500).json({
             success: false,
-            error: 'Failed to seed configurations'
+            error: 'Failed to seed configurations',
+            details: error.message
         });
     }
 });
